@@ -274,6 +274,22 @@ export default function App() {
   useEffect(() => {
     try { localStorage.setItem("strokelab_practice", JSON.stringify(practiceLogs)); } catch (e) {}
   }, [practiceLogs]);
+
+  // Persistent per-course hole game-plans: { [courseName]: { [holeNumber]: planText } }
+  const [coursePlans, setCoursePlans] = useState(() => {
+    try { const s = localStorage.getItem("strokelab_courseplans"); return s ? JSON.parse(s) : {}; } catch (e) { return {}; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("strokelab_courseplans", JSON.stringify(coursePlans)); } catch (e) {}
+  }, [coursePlans]);
+  const getHolePlan = (course, holeNum) => (coursePlans[course] && coursePlans[course][holeNum]) || "";
+  const setHolePlan = (course, holeNum, text) => {
+    if (!course) return;
+    setCoursePlans(prev => ({
+      ...prev,
+      [course]: { ...(prev[course] || {}), [holeNum]: text }
+    }));
+  };
   const [practiceForm, setPracticeForm] = useState({ date: new Date().toISOString().split("T")[0], area: "Putting", drill: "", duration: 30, notes: "", made: null, att: null });
   const [roundTargets] = useState({ girMin: 11, puttsMax: 30, firMin: 8, hazMax: 1 });
 
@@ -727,6 +743,25 @@ export default function App() {
           </div>
 
           <div style={{ padding: "14px 16px 20px", display: "flex", flexDirection: "column", gap: 16 }}>
+
+            {/* GAME PLAN - persistent per course+hole, read-first */}
+            <div style={{ background: "#eef4ff", border: "1px solid " + BL, borderRadius: 10, padding: "10px 12px" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+                <span style={{ fontSize: 11, fontWeight: 800, color: BL, textTransform: "uppercase", letterSpacing: "0.07em" }}>
+                  Game Plan{form.course ? " - " + form.course : ""}
+                </span>
+                {!form.course && <span style={{ fontSize: 10, color: T3 }}>set course to save</span>}
+              </div>
+              <textarea
+                value={getHolePlan(form.course, h.hole)}
+                onChange={e => setHolePlan(form.course, h.hole, e.target.value)}
+                placeholder={"Tee: club + aim line\nAvoid: dead side / hazard\nApproach: pin plan, ideal miss"}
+                rows={3}
+                style={{ width: "100%", background: CARD, border: "1px solid " + BD, borderRadius: 8, padding: "9px 11px", fontSize: 14, color: T1, fontFamily: "inherit", resize: "vertical", lineHeight: 1.45 }} />
+              <div style={{ fontSize: 10, color: T3, marginTop: 4, fontStyle: "italic" }}>
+                Saved for this course - shows every time you play this hole. Refine it now while it is fresh.
+              </div>
+            </div>
 
             {/* Quick regulation par */}
             <button onClick={fillRegPar}
