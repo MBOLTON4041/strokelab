@@ -90,14 +90,18 @@ function calcHcp(rounds) {
 function emptyHoles() {
   return HOLES.map(h => ({
     hole: h.h, par: h.p, score: h.p, putts: 2,
-    fir: h.p >= 4 ? null : undefined,
+    fir: h.p >= 4 ? null : undefined,           // legacy boolean kept for back-compat
+    teeResult: null,                             // "fairway"|"rough"|"bunker"|"trees"|"penalty"
     firMiss: null, teeClub: null,
     gir: false, prox: 20, distToHole: null, approachClub: null,
+    apprDist: null,                              // distance approach was hit FROM (m)
+    lie: null,                                   // "fairway"|"lightRough"|"heavyRough"|"fairwayBunker"
     missDir: null, udAtt: false, udMade: false, udType: null, // "chip" | "bunker"
     sand: false, sandSave: false,
     hazard: false, hazardType: null,
-    puttDist: null, // first putt distance in metres
-    notes: "" // per-hole notes
+    puttDist: null,                              // first putt distance in metres (every hole)
+    decision: null,                              // "good" | "bad" process flag
+    notes: ""
   }));
 }
 
@@ -116,10 +120,12 @@ function aggHoles(holes) {
   const missHoles = holes.filter(h => !h.gir && h.udAtt);
   const sandHoles = holes.filter(h => h.sand);
   const hazHoles  = holes.filter(h => h.hazard);
+  // Derive fairway-hit from teeResult when present, else fall back to legacy boolean
+  const firHit = (h) => h.teeResult ? h.teeResult === "fairway" : h.fir === true;
   return {
     score:         holes.reduce((s, h) => s + (h.score || h.par), 0),
     totalPutts:    holes.reduce((s, h) => s + (h.putts || 2), 0),
-    fairwaysHit:   firHoles.filter(h => h.fir === true).length,
+    fairwaysHit:   firHoles.filter(firHit).length,
     fairwaysTotal: firHoles.length,
     girsHit:       girHoles.length,
     avgProxFt:     girHoles.length ? Math.round(girHoles.reduce((s, h) => s + (h.prox || 25), 0) / girHoles.length) : 25,
@@ -137,6 +143,15 @@ function aggHoles(holes) {
     avgPuttDist:   girHoles.filter(h => h.puttDist > 0).length
                      ? Math.round(girHoles.filter(h => h.puttDist > 0).reduce((s,h) => s+(h.puttDist||0), 0) / girHoles.filter(h => h.puttDist > 0).length)
                      : null,
+    // New tee-result breakdown
+    teeFairway:    firHoles.filter(h => h.teeResult === "fairway").length,
+    teeRough:      firHoles.filter(h => h.teeResult === "rough").length,
+    teeBunker:     firHoles.filter(h => h.teeResult === "bunker").length,
+    teeTrees:      firHoles.filter(h => h.teeResult === "trees").length,
+    teePenalty:    firHoles.filter(h => h.teeResult === "penalty").length,
+    // Decision quality
+    goodDecisions: holes.filter(h => h.decision === "good").length,
+    badDecisions:  holes.filter(h => h.decision === "bad").length,
   };
 }
 
@@ -527,26 +542,23 @@ export default function App() {
 
   // -- LOG ROUND --
   function EnterRound() {
-    // currentHole: 0-17 index into form.holes
     const [holeIdx, setHoleIdx] = useState(0);
+    const [lastTeeClub, setLastTeeClub] = useState("Driver");
     const h   = form.holes[holeIdx];
     const gi  = holeIdx;
     const par = h.par;
 
     function sLabel(score, par) {
       const d = score - par;
-      if (d <= -2) return { bg: BLL, tc: BL,  lbl: "Eagle" };
-      if (d === -1) return { bg: GNL, tc: GN, lbl: "Birdie" };
-      if (d === 0)  return { bg: "transparent", tc: T2, lbl: "Par" };
-      if (d === 1)  return { bg: GLL, tc: GL,  lbl: "Bogey" };
-      if (d === 2)  return { bg: ORL, tc: OR,  lbl: "Double" };
-      return               { bg: RDL, tc: RD,  lbl: "Triple+" };
+      if (d <= -2) return { tc: BL,  lbl: "Eagle" };
+      if (d === -1) return { tc: GN, lbl: "Birdie" };
+      if (d === 0)  return { tc: T2, lbl: "Par" };
+      if (d === 1)  return { tc: GL,  lbl: "Bogey" };
+      if (d === 2)  return { tc: OR,  lbl: "Double" };
+      return               { tc: RD,  lbl: "Triple+" };
     }
-
     const sl = sLabel(h.score, par);
 
-    // Running totals
-    const completedHoles = form.holes.filter((_, i) => i <= holeIdx);
     const runScore = form.holes.reduce((s, x) => s + (x.score || 0), 0);
     const runPar   = form.holes.reduce((s, x) => s + x.par, 0);
     const runPM    = runScore - runPar;
@@ -555,10 +567,9 @@ export default function App() {
     const frontPM    = frontScore - FRONT_PAR;
     const backPM     = backScore - BACK_PAR;
 
-    // Progress dots
     function dotColor(i) {
       const hh = form.holes[i];
-      const d = hh.score - hh.par;
+      const d = (hh.score||hh.par) - hh.par;
       if (d <= -1) return GN;
       if (d === 0) return T3;
       if (d === 1) return GL;
@@ -566,36 +577,59 @@ export default function App() {
       return RD;
     }
 
+    // Auto-derive GIR from score - putts <= par - 2
+    function autoGIR(hole) {
+      return (hole.score - hole.putts) <= (hole.par - 2);
+    }
+
+    // One-tap regulation par fill
+    function fillRegPar() {
+      const updates = {
+        score: par, putts: 2, gir: true, prox: 8, puttDist: 8,
+        decision: "good"
+      };
+      if (par >= 4) { updates.teeResult = "fairway"; updates.teeClub = par === 5 ? "Driver" : lastTeeClub; }
+      setForm(f => {
+        const holes = [...f.holes];
+        holes[gi] = { ...holes[gi], ...updates };
+        return { ...f, holes };
+      });
+    }
+
+    const NAVY  = "#18213a";
+    const NAVY2 = "#1a3a5c";
+    const WHT   = "#ffffff";
+
     const btnBase = {
       border: "1px solid " + BD, borderRadius: 8, padding: "10px 0",
       fontSize: 14, fontWeight: 600, cursor: "pointer", flex: 1,
-      fontFamily: "inherit", transition: "all 0.15s"
+      fontFamily: "inherit", transition: "all 0.12s"
     };
+    const lblStyle = { fontSize: 11, fontWeight: 700, color: T3, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 };
 
-    // Large +/- stepper
     function Stepper({ val, min, max, onChange, color }) {
       return (
-        <div style={{ display: "flex", alignItems: "center", gap: 0, background: C2, borderRadius: 12, overflow: "hidden", border: "1px solid " + BD }}>
+        <div style={{ display: "flex", alignItems: "center", background: C2, borderRadius: 12, overflow: "hidden", border: "1px solid " + BD }}>
           <button onClick={() => onChange(Math.max(min, val - 1))}
-            style={{ background: "none", border: "none", padding: "0 20px", fontSize: 24, fontWeight: 300, color: T2, cursor: "pointer", height: 56, minWidth: 56 }}>-</button>
-          <span style={{ fontSize: 32, fontWeight: 800, color: color || T1, minWidth: 48, textAlign: "center", fontFamily: "monospace" }}>{val}</span>
+            style={{ background: "none", border: "none", padding: "0 18px", fontSize: 26, fontWeight: 300, color: T2, cursor: "pointer", height: 56, minWidth: 52 }}>-</button>
+          <span style={{ fontSize: 30, fontWeight: 800, color: color || T1, minWidth: 44, textAlign: "center", fontFamily: "monospace" }}>{val}</span>
           <button onClick={() => onChange(Math.min(max, val + 1))}
-            style={{ background: "none", border: "none", padding: "0 20px", fontSize: 24, fontWeight: 300, color: T2, cursor: "pointer", height: 56, minWidth: 56 }}>+</button>
+            style={{ background: "none", border: "none", padding: "0 18px", fontSize: 24, fontWeight: 300, color: T2, cursor: "pointer", height: 56, minWidth: 52 }}>+</button>
         </div>
       );
     }
 
-    // Toggle button group
-    function ToggleGroup({ value, opts, onChange, nullable }) {
+    function Seg({ value, opts, onChange, activeColor }) {
       return (
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          {opts.map(([v, label]) => {
+          {opts.map(([v, label, c]) => {
             const active = value === v;
+            const ac = c || activeColor || BL;
             return (
-              <button key={v} onClick={() => onChange(nullable && active ? null : v)}
-                style={{ ...btnBase, flex: "none", padding: "10px 16px", fontSize: 13,
-                  background: active ? BL : C2, color: active ? WHT : T2,
-                  borderColor: active ? BL : BD, borderRadius: 8 }}>
+              <button key={v} onClick={() => onChange(active ? null : v)}
+                style={{ ...btnBase, padding: "10px 6px", fontSize: 12,
+                  background: active ? ac : C2, color: active ? WHT : T2,
+                  borderColor: active ? ac : BD }}>
                 {label}
               </button>
             );
@@ -605,10 +639,6 @@ export default function App() {
     }
 
     const CLUB_OPTS = ["Driver","Mini","4 Wood","Hybrid","4 Iron","5 Iron","6 Iron","7 Iron","8 Iron","9 Iron","PW","SW","LW"];
-    const MISS_OPTS = [["L","Left"],["R","Right"],["S","Short"],["Lg","Long"]];
-    const FIR_OPTS  = [["Y","Hit"],["N","Miss"]];
-    const GIR_OPTS  = [["Y","Hit"],["N","Miss"]];
-    const UD_OPTS   = [["chip","Chip"],["bunker","Bunker"]];
 
     return (
       <div style={{ maxWidth: 480, margin: "0 auto", padding: "0 0 80px" }}>
@@ -629,7 +659,7 @@ export default function App() {
           <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
             {Object.entries(TEES).map(([key, t]) => (
               <button key={key} onClick={() => setForm(f => ({ ...f, tee: key, rating: t.rating, slope: t.slope }))}
-                style={{ ...btnBase, flex: 1, padding: "8px 0", fontSize: 12,
+                style={{ ...btnBase, padding: "8px 0", fontSize: 12,
                   background: form.tee === key ? NAVY : C2,
                   color: form.tee === key ? WHT : T2,
                   borderColor: form.tee === key ? NAVY : BD }}>
@@ -637,7 +667,6 @@ export default function App() {
               </button>
             ))}
           </div>
-          {/* Running score bar */}
           <div style={{ display: "flex", gap: 8, fontSize: 12, color: T2 }}>
             <span style={{ background: C2, borderRadius: 6, padding: "4px 10px" }}>F9: <b style={{ color: frontPM > 0 ? RD : frontPM < 0 ? GN : T2 }}>{frontScore} ({frontPM > 0 ? "+" : ""}{frontPM})</b></span>
             <span style={{ background: C2, borderRadius: 6, padding: "4px 10px" }}>B9: <b style={{ color: backPM > 0 ? RD : backPM < 0 ? GN : T2 }}>{backScore} ({backPM > 0 ? "+" : ""}{backPM})</b></span>
@@ -660,7 +689,6 @@ export default function App() {
         {/* HOLE CARD */}
         <div style={{ background: CARD, borderRadius: 16, border: "1px solid " + BD, overflow: "hidden", marginBottom: 12 }}>
 
-          {/* Hole header */}
           <div style={{ background: holeIdx < 9 ? NAVY : NAVY2, padding: "16px 20px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <div>
               <div style={{ fontSize: 13, color: "rgba(255,255,255,0.6)", textTransform: "uppercase", letterSpacing: "0.08em" }}>Hole</div>
@@ -671,168 +699,178 @@ export default function App() {
               <div style={{ fontSize: 40, fontWeight: 900, color: WHT, lineHeight: 1, fontFamily: "monospace" }}>{par}</div>
             </div>
             <div style={{ textAlign: "right" }}>
-              <div style={{ fontSize: 13, color: "rgba(255,255,255,0.6)" }}>{sl.lbl || "Score"}</div>
-              <div style={{ fontSize: 40, fontWeight: 900, color: sl.tc === T1 ? WHT : sl.tc, lineHeight: 1, fontFamily: "monospace" }}>
+              <div style={{ fontSize: 13, color: "rgba(255,255,255,0.6)" }}>{sl.lbl}</div>
+              <div style={{ fontSize: 40, fontWeight: 900, color: sl.tc, lineHeight: 1, fontFamily: "monospace" }}>
                 {h.score - par > 0 ? "+" : ""}{h.score - par === 0 ? "E" : h.score - par}
               </div>
             </div>
           </div>
 
-          <div style={{ padding: "16px 16px 20px", display: "flex", flexDirection: "column", gap: 16 }}>
+          <div style={{ padding: "14px 16px 20px", display: "flex", flexDirection: "column", gap: 16 }}>
+
+            {/* Quick regulation par */}
+            <button onClick={fillRegPar}
+              style={{ background: GNL, color: GN, border: "1px solid " + GN, borderRadius: 10, padding: "10px 0", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
+              Quick Fill: Regulation Par (then edit anything that differs)
+            </button>
 
             {/* Score + Putts */}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
               <div>
-                <div style={{ fontSize: 11, fontWeight: 700, color: T3, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>Score</div>
-                <Stepper val={h.score} min={1} max={12} onChange={v => sh(gi,"score",v)} color={sl.tc} />
+                <div style={lblStyle}>Score</div>
+                <Stepper val={h.score} min={1} max={12} onChange={v => {
+                  const newGir = (v - h.putts) <= (par - 2);
+                  setForm(f => { const hh=[...f.holes]; hh[gi]={...hh[gi], score:v, gir:newGir}; return {...f, holes:hh}; });
+                }} color={sl.tc} />
               </div>
               <div>
-                <div style={{ fontSize: 11, fontWeight: 700, color: T3, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>Putts</div>
-                <Stepper val={h.putts} min={0} max={6} onChange={v => sh(gi,"putts",v)} color={h.putts >= 3 ? RD : h.putts === 1 ? GN : T1} />
+                <div style={lblStyle}>Putts</div>
+                <Stepper val={h.putts} min={0} max={6} onChange={v => {
+                  const newGir = (h.score - v) <= (par - 2);
+                  setForm(f => { const hh=[...f.holes]; hh[gi]={...hh[gi], putts:v, gir:newGir}; return {...f, holes:hh}; });
+                }} color={h.putts >= 3 ? RD : h.putts === 1 ? GN : T1} />
               </div>
             </div>
 
-            {/* FIR - only for par 4/5 */}
-            {par >= 4 && (
-              <div>
-                <div style={{ fontSize: 11, fontWeight: 700, color: T3, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>Fairway (FIR)</div>
-                <div style={{ display: "flex", gap: 6 }}>
-                  {[["Y","Hit (Y)"],["N","Miss (N)"]].map(([v, label]) => (
-                    <button key={v} onClick={() => sh(gi,"fir", h.fir === v ? null : v)}
-                      style={{ ...btnBase, flex: 1,
-                        background: h.fir === v ? (v === "Y" ? GN : RD) : C2,
-                        color: h.fir === v ? WHT : T2,
-                        borderColor: h.fir === v ? (v === "Y" ? GN : RD) : BD }}>
-                      {label}
-                    </button>
-                  ))}
-                  {h.fir === "N" && (
-                    <div style={{ display: "flex", gap: 4, flex: 1 }}>
-                      {[["L","Left"],["R","Right"],["S","Short"]].map(([v, label]) => (
-                        <button key={v} onClick={() => sh(gi,"firMiss", h.firMiss === v ? null : v)}
-                          style={{ ...btnBase, flex: 1, padding: "10px 4px", fontSize: 12,
-                            background: h.firMiss === v ? OR : C2,
-                            color: h.firMiss === v ? WHT : T2,
-                            borderColor: h.firMiss === v ? OR : BD }}>
-                          {label}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* Tee Club */}
-            {par >= 4 && (
-              <div>
-                <div style={{ fontSize: 11, fontWeight: 700, color: T3, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>Tee Club</div>
-                <select value={h.teeClub || ""} onChange={e => sh(gi,"teeClub",e.target.value || null)}
-                  style={{ width: "100%", background: C2, border: "1px solid " + BD, borderRadius: 8, padding: "12px 14px", fontSize: 14, color: h.teeClub ? T1 : T3, fontFamily: "inherit" }}>
-                  <option value="">Select club...</option>
-                  {CLUB_OPTS.map(c => <option key={c} value={c}>{c}</option>)}
-                </select>
-              </div>
-            )}
-
-            {/* GIR */}
+            {/* First putt distance - ALWAYS */}
             <div>
-              <div style={{ fontSize: 11, fontWeight: 700, color: T3, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>Green in Regulation (GIR)</div>
+              <div style={lblStyle}>First Putt Distance (m)</div>
               <div style={{ display: "flex", gap: 6 }}>
-                {[["Y","Hit (Y)"],["N","Miss (N)"]].map(([v, label]) => (
-                  <button key={v} onClick={() => sh(gi,"gir", h.gir === (v === "Y") ? null : v === "Y")}
-                    style={{ ...btnBase, flex: 1,
-                      background: (h.gir === true && v === "Y") || (h.gir === false && v === "N") ? (v === "Y" ? GN : RD) : C2,
-                      color: (h.gir === true && v === "Y") || (h.gir === false && v === "N") ? WHT : T2,
-                      borderColor: (h.gir === true && v === "Y") || (h.gir === false && v === "N") ? (v === "Y" ? GN : RD) : BD }}>
-                    {label}
+                {[1,2,3,5,8,12,20].map(d => (
+                  <button key={d} onClick={() => sh(gi,"puttDist", h.puttDist === d ? null : d)}
+                    style={{ ...btnBase, padding: "8px 0", fontSize: 13,
+                      background: h.puttDist === d ? BL : C2, color: h.puttDist === d ? WHT : T2,
+                      borderColor: h.puttDist === d ? BL : BD }}>
+                    {d === 20 ? "20+" : d}
                   </button>
                 ))}
               </div>
             </div>
 
-            {/* Proximity - show if GIR */}
+            {/* TEE RESULT - par 4/5 only */}
+            {par >= 4 && (
+              <div>
+                <div style={lblStyle}>Tee Shot Result</div>
+                <Seg value={h.teeResult} onChange={v => {
+                    sh(gi,"teeResult",v);
+                    if (v === "penalty") sh(gi,"hazard",true);
+                  }}
+                  opts={[
+                    ["fairway","Fairway",GN],
+                    ["rough","Rough",GL],
+                    ["bunker","Bunker",OR],
+                    ["trees","Trees",OR],
+                    ["penalty","Penalty",RD],
+                  ]} />
+                <div style={{ marginTop: 8 }}>
+                  <select value={h.teeClub || ""} onChange={e => { sh(gi,"teeClub",e.target.value || null); if(e.target.value) setLastTeeClub(e.target.value); }}
+                    style={{ width: "100%", background: C2, border: "1px solid " + BD, borderRadius: 8, padding: "11px 14px", fontSize: 14, color: h.teeClub ? T1 : T3, fontFamily: "inherit" }}>
+                    <option value="">Tee club...</option>
+                    {CLUB_OPTS.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </div>
+              </div>
+            )}
+
+            {/* APPROACH: distance + lie + club */}
+            <div>
+              <div style={lblStyle}>Approach Distance (m from)</div>
+              <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                {[["<100","90"],["100-125","115"],["125-150","140"],["150-175","165"],["175-200","190"],["200+","210"]].map(([label,val]) => (
+                  <button key={label} onClick={() => sh(gi,"apprDist", h.apprDist === val ? null : val)}
+                    style={{ ...btnBase, padding: "8px 4px", fontSize: 11, flex: "1 1 28%",
+                      background: h.apprDist === val ? TL : C2, color: h.apprDist === val ? WHT : T2,
+                      borderColor: h.apprDist === val ? TL : BD }}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <div style={{ marginTop: 8 }}>
+                <div style={lblStyle}>Lie</div>
+                <Seg value={h.lie} onChange={v => sh(gi,"lie",v)}
+                  opts={[
+                    ["fairway","Fairway",GN],
+                    ["lightRough","Lt Rough",GL],
+                    ["heavyRough","Hv Rough",OR],
+                    ["fairwayBunker","Fwy Bnkr",RD],
+                  ]} />
+              </div>
+              <div style={{ marginTop: 8 }}>
+                <select value={h.approachClub || ""} onChange={e => sh(gi,"approachClub",e.target.value || null)}
+                  style={{ width: "100%", background: C2, border: "1px solid " + BD, borderRadius: 8, padding: "11px 14px", fontSize: 14, color: h.approachClub ? T1 : T3, fontFamily: "inherit" }}>
+                  <option value="">Approach club...</option>
+                  {CLUB_OPTS.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
+            </div>
+
+            {/* GIR */}
+            <div>
+              <div style={lblStyle}>Green in Regulation {((h.score - h.putts) <= (par - 2)) === h.gir ? "(auto)" : ""}</div>
+              <div style={{ display: "flex", gap: 6 }}>
+                {[["Y","Hit (Y)",GN],["N","Miss (N)",RD]].map(([v,label,c]) => {
+                  const isActive = (h.gir === true && v === "Y") || (h.gir === false && v === "N");
+                  return (
+                    <button key={v} onClick={() => sh(gi,"gir", v === "Y")}
+                      style={{ ...btnBase, background: isActive ? c : C2, color: isActive ? WHT : T2, borderColor: isActive ? c : BD }}>
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Proximity if GIR */}
             {h.gir === true && (
               <div>
-                <div style={{ fontSize: 11, fontWeight: 700, color: T3, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>Proximity to Pin (m)</div>
-                <input type="number" value={h.prox || ""} onChange={e => sh(gi,"prox",parseInt(e.target.value)||null)}
+                <div style={lblStyle}>Proximity to Pin (m)</div>
+                <input type="number" value={h.prox || ""} onChange={e => { const v = parseInt(e.target.value)||null; sh(gi,"prox",v); if(v) sh(gi,"puttDist",v); }}
                   placeholder="e.g. 4" inputMode="numeric"
                   style={{ width: "100%", background: C2, border: "1px solid " + BD, borderRadius: 8, padding: "12px 14px", fontSize: 16, color: T1, fontFamily: "monospace" }} />
               </div>
             )}
 
-            {/* Miss info - if missed GIR */}
+            {/* Miss + U&D if missed GIR */}
             {h.gir === false && (
               <div>
-                <div style={{ fontSize: 11, fontWeight: 700, color: T3, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>Miss Direction</div>
-                <div style={{ display: "flex", gap: 6 }}>
-                  {[["L","Left"],["R","Right"],["S","Short"],["Lg","Long"]].map(([v, label]) => (
-                    <button key={v} onClick={() => sh(gi,"missDir", h.missDir === v ? null : v)}
-                      style={{ ...btnBase, flex: 1, fontSize: 12,
-                        background: h.missDir === v ? OR : C2,
-                        color: h.missDir === v ? WHT : T2,
-                        borderColor: h.missDir === v ? OR : BD }}>
-                      {label}
-                    </button>
-                  ))}
-                </div>
-                {/* U&D */}
+                <div style={lblStyle}>Miss Direction</div>
+                <Seg value={h.missDir} onChange={v => sh(gi,"missDir",v)} activeColor={OR}
+                  opts={[["L","Left"],["R","Right"],["S","Short"],["Lg","Long"]]} />
                 <div style={{ marginTop: 10 }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: T3, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>Up & Down?</div>
+                  <div style={lblStyle}>Up & Down</div>
                   <div style={{ display: "flex", gap: 6 }}>
-                    {[["chip","Chip"],["bunker","Bunker"]].map(([v, label]) => (
-                      <button key={v} onClick={() => sh(gi,"udType", h.udType === v ? null : v)}
-                        style={{ ...btnBase, flex: 1,
-                          background: h.udType === v ? GL : C2,
-                          color: h.udType === v ? WHT : T2,
-                          borderColor: h.udType === v ? GL : BD }}>
+                    {[["chip","Chip",GL],["bunker","Bunker",OR]].map(([v,label,c]) => (
+                      <button key={v} onClick={() => { sh(gi,"udType", h.udType === v ? null : v); sh(gi,"udAtt", h.udType !== v); }}
+                        style={{ ...btnBase, background: h.udType === v ? c : C2, color: h.udType === v ? WHT : T2, borderColor: h.udType === v ? c : BD }}>
                         {label}
                       </button>
                     ))}
                     {h.udType && [
-                        <button key="made" onClick={() => sh(gi,"udMade",true)}
-                          style={{ ...btnBase, flex: 1, background: h.udMade === true ? GN : C2, color: h.udMade === true ? WHT : T2, borderColor: h.udMade === true ? GN : BD }}>
-                          Made (Y)
-                        </button>,
-                        <button key="missed" onClick={() => sh(gi,"udMade",false)}
-                          style={{ ...btnBase, flex: 1, background: h.udMade === false ? RD : C2, color: h.udMade === false ? WHT : T2, borderColor: h.udMade === false ? RD : BD }}>
-                          Missed (N)
-                        </button>
+                      <button key="made" onClick={() => sh(gi,"udMade",true)}
+                        style={{ ...btnBase, background: h.udMade === true ? GN : C2, color: h.udMade === true ? WHT : T2, borderColor: h.udMade === true ? GN : BD }}>
+                        Made (Y)
+                      </button>,
+                      <button key="missed" onClick={() => sh(gi,"udMade",false)}
+                        style={{ ...btnBase, background: h.udMade === false ? RD : C2, color: h.udMade === false ? WHT : T2, borderColor: h.udMade === false ? RD : BD }}>
+                        Missed (N)
+                      </button>
                     ]}
                   </div>
                 </div>
               </div>
             )}
 
-            {/* Approach club + distance */}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-              <div>
-                <div style={{ fontSize: 11, fontWeight: 700, color: T3, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>Approach Club</div>
-                <select value={h.approachClub || ""} onChange={e => sh(gi,"approachClub",e.target.value || null)}
-                  style={{ width: "100%", background: C2, border: "1px solid " + BD, borderRadius: 8, padding: "12px 10px", fontSize: 13, color: h.approachClub ? T1 : T3, fontFamily: "inherit" }}>
-                  <option value="">Club...</option>
-                  {CLUB_OPTS.map(c => <option key={c} value={c}>{c}</option>)}
-                </select>
-              </div>
-              <div>
-                <div style={{ fontSize: 11, fontWeight: 700, color: T3, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>Dist to Pin (m)</div>
-                <input type="number" value={h.distToHole || ""} onChange={e => sh(gi,"distToHole",parseInt(e.target.value)||null)}
-                  placeholder="m" inputMode="numeric"
-                  style={{ width: "100%", background: C2, border: "1px solid " + BD, borderRadius: 8, padding: "12px 10px", fontSize: 16, color: T1, fontFamily: "monospace" }} />
-              </div>
-            </div>
-
             {/* Hazard */}
             <div>
-              <div style={{ fontSize: 11, fontWeight: 700, color: T3, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>Hazard / Penalty</div>
+              <div style={lblStyle}>Hazard / Penalty</div>
               <div style={{ display: "flex", gap: 6 }}>
                 <button onClick={() => sh(gi,"hazard",!h.hazard)}
-                  style={{ ...btnBase, flex: 1, background: h.hazard ? RD : C2, color: h.hazard ? WHT : T2, borderColor: h.hazard ? RD : BD }}>
+                  style={{ ...btnBase, background: h.hazard ? RD : C2, color: h.hazard ? WHT : T2, borderColor: h.hazard ? RD : BD }}>
                   {h.hazard ? "Penalty (Y)" : "No Penalty"}
                 </button>
                 {h.hazard && (
                   <select value={h.hazardType || ""} onChange={e => sh(gi,"hazardType",e.target.value || null)}
-                    style={{ flex: 1, background: RDL, border: "1px solid " + RD, borderRadius: 8, padding: "10px 10px", fontSize: 13, color: RD, fontFamily: "inherit" }}>
+                    style={{ flex: 1, background: RDL, border: "1px solid " + RD, borderRadius: 8, padding: "10px", fontSize: 13, color: RD, fontFamily: "inherit" }}>
                     <option value="">Type...</option>
                     {HAZARD_OPTS.map(o => <option key={o} value={o}>{o}</option>)}
                   </select>
@@ -840,44 +878,50 @@ export default function App() {
               </div>
             </div>
 
+            {/* Decision quality */}
+            <div>
+              <div style={lblStyle}>Decision Quality (process, not outcome)</div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button onClick={() => sh(gi,"decision", h.decision === "good" ? null : "good")}
+                  style={{ ...btnBase, background: h.decision === "good" ? GN : C2, color: h.decision === "good" ? WHT : T2, borderColor: h.decision === "good" ? GN : BD }}>
+                  Good Decision
+                </button>
+                <button onClick={() => sh(gi,"decision", h.decision === "bad" ? null : "bad")}
+                  style={{ ...btnBase, background: h.decision === "bad" ? RD : C2, color: h.decision === "bad" ? WHT : T2, borderColor: h.decision === "bad" ? RD : BD }}>
+                  Bad Decision
+                </button>
+              </div>
+            </div>
+
             {/* Hole notes */}
             <div>
-              <div style={{ fontSize: 11, fontWeight: 700, color: T3, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>Notes</div>
+              <div style={lblStyle}>Notes</div>
               <textarea value={h.notes || ""} onChange={e => sh(gi,"notes",e.target.value)}
-                placeholder="Decisions, shots, conditions..."
-                rows={2}
+                placeholder="Decisions, shots, conditions..." rows={2}
                 style={{ width: "100%", background: "#fffef5", border: "1px solid " + BD, borderRadius: 8, padding: "10px 12px", fontSize: 14, color: T1, fontFamily: "inherit", resize: "none" }} />
             </div>
 
           </div>
         </div>
 
-        {/* Navigation arrows */}
+        {/* Navigation */}
         <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
           <button onClick={() => setHoleIdx(Math.max(0, holeIdx - 1))} disabled={holeIdx === 0}
-            style={{ flex: 1, padding: "16px 0", background: holeIdx === 0 ? C2 : CARD, border: "1px solid " + BD, borderRadius: 12, fontSize: 22, color: holeIdx === 0 ? T3 : T1, cursor: holeIdx === 0 ? "default" : "pointer", fontWeight: 700 }}>
+            style={{ flex: 1, padding: "16px 0", background: holeIdx === 0 ? C2 : CARD, border: "1px solid " + BD, borderRadius: 12, fontSize: 18, color: holeIdx === 0 ? T3 : T1, cursor: holeIdx === 0 ? "default" : "pointer", fontWeight: 700 }}>
             {"< "}{holeIdx > 0 ? `H${holeIdx}` : ""}
           </button>
-
-          <div style={{ flex: 2, textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2 }}>
+          <div style={{ flex: 1.4, textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
             <span style={{ fontSize: 13, color: T3 }}>{holeIdx + 1} of 18</span>
-            <div style={{ display: "flex", gap: 3 }}>
-              {form.holes.map((_, i) => (
-                <div key={i} style={{ width: 6, height: 6, borderRadius: "50%",
-                  background: i === holeIdx ? BL : i < holeIdx ? dotColor(i) : BD }} />
-              ))}
-            </div>
           </div>
-
           <button onClick={() => setHoleIdx(Math.min(17, holeIdx + 1))} disabled={holeIdx === 17}
-            style={{ flex: 1, padding: "16px 0", background: holeIdx === 17 ? C2 : BL, border: "none", borderRadius: 12, fontSize: 22, color: holeIdx === 17 ? T3 : WHT, cursor: holeIdx === 17 ? "default" : "pointer", fontWeight: 700 }}>
+            style={{ flex: 1, padding: "16px 0", background: holeIdx === 17 ? C2 : BL, border: "none", borderRadius: 12, fontSize: 18, color: holeIdx === 17 ? T3 : WHT, cursor: holeIdx === 17 ? "default" : "pointer", fontWeight: 700 }}>
             {holeIdx < 17 ? `H${holeIdx + 2}` : ""}{" >"}
           </button>
         </div>
 
         {/* Conditions + Save */}
         <div style={{ background: CARD, borderRadius: 12, padding: 16, border: "1px solid " + BD, marginBottom: 12 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: T3, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 10 }}>Round Conditions</div>
+          <div style={lblStyle}>Round Conditions</div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 12 }}>
             <select value={form.wind || ""} onChange={e => setForm(f => ({ ...f, wind: e.target.value || null }))}
               style={{ background: C2, border: "1px solid " + BD, borderRadius: 8, padding: "10px 8px", fontSize: 13, color: form.wind ? T1 : T3, fontFamily: "inherit" }}>
@@ -894,8 +938,7 @@ export default function App() {
               style={{ background: C2, border: "1px solid " + BD, borderRadius: 8, padding: "10px 8px", fontSize: 13, color: T1, fontFamily: "inherit" }} />
           </div>
           <textarea value={form.notes || ""} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
-            placeholder="Round notes / DECADE reflection..."
-            rows={3}
+            placeholder="Round notes / DECADE reflection..." rows={3}
             style={{ width: "100%", background: C2, border: "1px solid " + BD, borderRadius: 8, padding: "10px 12px", fontSize: 14, color: T1, fontFamily: "inherit", resize: "none", marginBottom: 12 }} />
           <button onClick={saveRound}
             style={{ width: "100%", background: GN, color: WHT, border: "none", borderRadius: 12, padding: "16px 0", fontSize: 17, fontWeight: 800, cursor: "pointer", letterSpacing: "0.02em" }}>
