@@ -96,7 +96,8 @@ function emptyHoles() {
     missDir: null, udAtt: false, udMade: false, udType: null, // "chip" | "bunker"
     sand: false, sandSave: false,
     hazard: false, hazardType: null,
-    puttDist: null // first putt distance in metres
+    puttDist: null, // first putt distance in metres
+    notes: "" // per-hole notes
   }));
 }
 
@@ -139,44 +140,7 @@ function aggHoles(holes) {
   };
 }
 
-function demoRounds() {
-  const courses = ["Huntingdale GC","Royal Melbourne","Kingston Heath","Victoria GC"];
-  return Array.from({ length: 16 }, (_, i) => {
-    const d = new Date(); d.setDate(d.getDate() - (15 - i) * 11);
-    const p = i / 15;
-    const tee = i % 3 === 0 ? "black" : "blue";
-    const holes = HOLES.map(h => {
-      const over = Math.max(0, Math.round((1.5 - p * 1.2) + Math.random() * 1.5 - 0.5));
-      return {
-        hole: h.h, par: h.p, score: h.p + over,
-        putts: Math.max(1, Math.round(2 + (over > 0 ? 0.4 : 0) + Math.random() * 0.6 - 0.2)),
-        fir: h.p >= 4 ? Math.random() > (0.38 - p * 0.18) : undefined,
-        firMiss: Math.random() > 0.5 ? "L" : "R",
-        teeClub: h.p === 3 ? null : (Math.random() > 0.25 ? "Driver" : Math.random() > 0.5 ? "Mini" : "4 Wood"),
-        gir: Math.random() > (0.32 - p * 0.18),
-        prox: Math.round(30 - p * 10 + Math.random() * 10 - 5),
-        distToHole: Math.round(140 + Math.random() * 60 - 30),
-        approachClub: ["7 Iron","8 Iron","9 Iron","PW","6 Iron","5 Iron"][Math.floor(Math.random()*6)],
-        missDir: "L", udAtt: over > 0, udMade: over > 0 && Math.random() > (0.45 - p * 0.2),
-        udType: Math.random() > 0.7 ? "bunker" : "chip",
-        sand: Math.random() > 0.88, sandSave: Math.random() > 0.5,
-        hazard: Math.random() > 0.92, hazardType: "Water"
-      };
-    });
-    const agg = aggHoles(holes);
-    return {
-      id: i + 1, date: d.toISOString().split("T")[0],
-      course: courses[i % 4], tee,
-      rating: TEES[tee].rating, slope: TEES[tee].slope,
-      avgDrive: Math.round(265 + p * 14 + Math.random() * 8 - 4),
-      avgProxFt: Math.round(28 - p * 7 + Math.random() * 5 - 2),
-      wind: [null,"calm","light","moderate","strong"][Math.floor(Math.random()*5)],
-      conditions: [null,"firm","normal","soft"][Math.floor(Math.random()*4)],
-      timeOfDay: [null,"morning","afternoon","twilight"][Math.floor(Math.random()*4)],
-      notes: "", holes: holes.map(h => ({...h, puttDist: h.gir ? Math.round(4 + Math.random()*12) : null})), ...agg
-    };
-  });
-}
+
 
 function ravg(arr, k) {
   if (!arr.length) return null;
@@ -267,30 +231,25 @@ function Btn({ label, active, onClick, ac, small }) {
 const TABS = [["dash","Dashboard"],["enter","+ Log Round"],["sg","Strokes Gained"],["holes","Hole Analysis"],["clubs","Club Stats"],["trend","Trends"],["practice","Practice Log"],["insights","Insights"]];
 
 export default function App() {
-  const [rounds, setRoundsRaw] = useState(() => {
-    try { const s = localStorage.getItem("strokelab_rounds"); return s ? JSON.parse(s) : []; } catch(e) { return []; }
-  });
-  const setRounds = (v) => {
-    const next = typeof v === "function" ? v(rounds) : v;
-    setRoundsRaw(next);
-    try { localStorage.setItem("strokelab_rounds", JSON.stringify(next)); } catch(e) {}
-  };
+  const [rounds,  setRounds]  = useState([]);
   const [tab,     setTab]     = useState("dash");
   const [form,    setForm]    = useState(emptyRound());
   const [editId,  setEditId]  = useState(null);
   const [nine,    setNine]    = useState(0);
   const [saved,       setSaved]       = useState(false);
   const [selectedRound, setSelectedRound] = useState(null);
-  const [practiceLogs, setPracticeLogsRaw] = useState(() => {
-    try { const s = localStorage.getItem("strokelab_practice"); return s ? JSON.parse(s) : []; } catch(e) { return []; }
-  });
-  const setPracticeLogs = (v) => {
-    const next = typeof v === "function" ? v(practiceLogs) : v;
-    setPracticeLogsRaw(next);
-    try { localStorage.setItem("strokelab_practice", JSON.stringify(next)); } catch(e) {}
-  };
+  const [practiceLogs, setPracticeLogs] = useState([]);
   const [practiceForm, setPracticeForm] = useState({ date: new Date().toISOString().split("T")[0], area: "Putting", drill: "", duration: 30, notes: "", made: null, att: null });
   const [roundTargets] = useState({ girMin: 11, puttsMax: 30, firMin: 8, hazMax: 1 });
+
+  const clearAllData = () => {
+    if (window.confirm("Delete ALL rounds and practice logs? This cannot be undone.")) {
+      setRounds([]);
+      setPracticeLogs([]);
+      try { localStorage.removeItem("strokelab_rounds"); localStorage.removeItem("strokelab_practice"); } catch(e) {}
+      setTab("dash");
+    }
+  };
   const fileRef = useRef();
 
   const rSG  = useMemo(() => rounds.map(r => ({ ...r, ...calcSG(r) })), [rounds]);
@@ -349,11 +308,10 @@ export default function App() {
       <div style={{ textAlign: "center", paddingTop: 80 }}>
         <div style={{ fontSize: 56, marginBottom: 12 }}>&#9971;</div>
         <div style={{ fontSize: 22, fontWeight: 800, color: T1, marginBottom: 8 }}>StrokeLab</div>
-        <div style={{ color: T2, marginBottom: 6 }}>No rounds yet. Log your first or load demo data.</div>
+        <div style={{ color: T2, marginBottom: 6 }}>No rounds yet. Log your first round using the Log Round tab.</div>
         <div style={{ color: T3, fontSize: 12, marginBottom: 28 }}>Strokes Gained | DECADE | +2 Target | Par {TOTAL_PAR}</div>
         <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
           <button onClick={() => setTab("enter")} style={{ background: BL, color: "#fff", padding: "10px 24px", borderRadius: 7, fontSize: 14, fontWeight: 600, border: "none", cursor: "pointer" }}>+ Log Round</button>
-          <button onClick={() => setRounds(demoRounds())} style={{ background: C2, color: T2, border: "1px solid " + BD, padding: "10px 24px", borderRadius: 7, fontSize: 14, cursor: "pointer" }}>Load Demo Data</button>
         </div>
       </div>
     );
@@ -633,7 +591,7 @@ export default function App() {
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
             <thead>
               <tr style={{ borderBottom: "2px solid " + BD, background: C2 }}>
-                {["Hole","Par","Score","Putts","FIR","Tee Club","GIR","Prox","1st Putt m","Dist m","Appr Club","Miss Dir","U/D","Bunker","Hazard"].map(h => (
+                {["Hole","Par","Score","Putts","FIR","Tee Club","GIR","Prox","1st Putt m","Dist m","Appr Club","Miss Dir","U/D","Bunker","Hazard","Notes"].map(h => (
                   <th key={h} style={{ padding: "6px 5px", textAlign: "center", color: T2, fontSize: 10, fontWeight: 700, textTransform: "uppercase", whiteSpace: "nowrap" }}>{h}</th>
                 ))}
               </tr>
@@ -717,6 +675,14 @@ export default function App() {
                         {h.hazard && <Sel value={h.hazardType} onChange={v => sh(gi,"hazardType",v)} opts={HAZARD_OPTS} placeholder="Type" style={{ fontSize: 10, width: 62 }} />}
                       </div>
                     </td>
+                    <td style={{ padding: "3px 5px" }}>
+                      <input
+                        value={h.notes || ""}
+                        onChange={e => sh(gi, "notes", e.target.value)}
+                        placeholder="Notes..."
+                        style={{ width: 120, fontSize: 10, padding: "3px 6px", border: "1px solid " + BD, borderRadius: 4, background: "#fffef0", color: T1, fontFamily: "inherit" }}
+                      />
+                    </td>
                   </tr>
                 );
               })}
@@ -726,7 +692,7 @@ export default function App() {
                 <td colSpan={2} style={{ padding: "6px 5px", color: T2, fontSize: 12 }}>Nine Total</td>
                 <td style={{ padding: "6px 5px", textAlign: "center", fontFamily: "monospace", color: pmColor(ninePM), fontSize: 14 }}>{nineScore} ({ninePM > 0 ? "+" : ""}{ninePM})</td>
                 <td style={{ padding: "6px 5px", textAlign: "center", fontFamily: "monospace", color: T2 }}>{nineHoles.reduce((s,h) => s+(h.putts||0), 0)}</td>
-                <td colSpan={10} />
+                <td colSpan={11} />
               </tr>
             </tfoot>
           </table>
@@ -1557,7 +1523,7 @@ export default function App() {
     const [showBag,       setShowBag]       = useState(false);
     const [selFirClub,    setSelFirClub]    = useState(null); // isolated tee club
     const [selGirClub,    setSelGirClub]    = useState(null); // isolated approach club
-    if (!rSG.length) return <div style={{ color: T3, padding: 40, textAlign: "center" }}>No rounds yet. Load demo data or log rounds to see club statistics.</div>;
+    if (!rSG.length) return <div style={{ color: T3, padding: 40, textAlign: "center" }}>No rounds yet. Log rounds to see club statistics.</div>;
     const allRounds = last(50);
     const allHoles  = allRounds.flatMap(r => r.holes || []);
 
@@ -2675,6 +2641,9 @@ export default function App() {
               HCP: <span style={{ color: BL, fontFamily: "monospace" }}>{hcp > 0 ? "+" + hcp : hcp}</span>
             </div>
           )}
+          <button onClick={clearAllData} style={{ background: "#fff0f0", color: "#c0392b", border: "1px solid #fcc", borderRadius: 6, padding: "4px 10px", fontSize: 11, cursor: "pointer" }}>
+            Clear Data
+          </button>
           <button onClick={doExport} style={{ background: C2, color: T2, border: "1px solid " + BD, borderRadius: 5, padding: "5px 12px", fontSize: 11, cursor: "pointer" }}>Export</button>
           <button onClick={() => fileRef.current.click()} style={{ background: C2, color: T2, border: "1px solid " + BD, borderRadius: 5, padding: "5px 12px", fontSize: 11, cursor: "pointer" }}>Import</button>
           <input ref={fileRef} type="file" accept=".json" onChange={doImport} style={{ display: "none" }} />
