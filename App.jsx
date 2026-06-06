@@ -261,6 +261,8 @@ export default function App() {
   const [form,    setForm]    = useState(emptyRound());
   const [editId,  setEditId]  = useState(null);
   const [nine,    setNine]    = useState(0);
+  const [holeIdx, setHoleIdx] = useState(0);          // entry: current hole (lifted from EnterRound for stable identity)
+  const [lastTeeClub, setLastTeeClub] = useState("Driver");
   const [saved,       setSaved]       = useState(false);
   const [selectedRound, setSelectedRound] = useState(null);
   const [practiceLogs, setPracticeLogs] = useState(() => {
@@ -331,7 +333,7 @@ export default function App() {
     const ti  = TEES[form.tee] || TEES.blue;
     const nr  = { ...form, ...agg, rating: ti.rating, slope: ti.slope, avgDrive: parseFloat(form.avgDrive) || 270, id: editId || Date.now() };
     setRounds(p => editId ? p.map(r => r.id === editId ? nr : r) : [...p, nr]);
-    setForm(emptyRound()); setEditId(null);
+    setForm(emptyRound()); setEditId(null); setHoleIdx(0);
     setSaved(true); setTimeout(() => setSaved(false), 2500);
     setTab("dash");
   }
@@ -578,8 +580,6 @@ export default function App() {
 
   // -- LOG ROUND --
   function EnterRound() {
-    const [holeIdx, setHoleIdx] = useState(0);
-    const [lastTeeClub, setLastTeeClub] = useState("Driver");
     const h   = form.holes[holeIdx];
     const gi  = holeIdx;
     const par = h.par;
@@ -3124,7 +3124,7 @@ export default function App() {
       </div>
       <div style={{ maxWidth: 1200, margin: "0 auto", padding: "20px 20px 60px" }}>
         {tab === "dash"     && <Dash />}
-        {tab === "enter"    && <EnterRound />}
+        {tab === "enter"    && EnterRound()}
         {tab === "sg"       && <SGTab />}
         {tab === "holes"    && <HoleAnalysis />}
         {tab === "clubs"    && <ClubStats />}
