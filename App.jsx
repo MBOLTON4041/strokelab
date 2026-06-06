@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef } from "react";
+import React, { useState, useMemo, useRef, useEffect } from "react";
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis } from "recharts";
 
 const HOLES = [
@@ -10,6 +10,14 @@ const HOLES = [
 const TOTAL_PAR = 73;
 const FRONT_PAR = 36;
 const BACK_PAR  = 37;
+const SG_WINDOWS = [
+  { n: 1,  label: "Last Round" },
+  { n: 3,  label: "Last 3"     },
+  { n: 5,  label: "Last 5"     },
+  { n: 10, label: "Last 10"    },
+  { n: 20, label: "Last 20"    },
+  { n: 0,  label: "All"        },
+];
 
 const TEES = {
   blue:  { label: "Blue",  rating: 73.0, slope: 141, scratch: 73 },
@@ -246,14 +254,26 @@ function Btn({ label, active, onClick, ac, small }) {
 const TABS = [["dash","Dashboard"],["enter","+ Log Round"],["sg","Strokes Gained"],["holes","Hole Analysis"],["clubs","Club Stats"],["trend","Trends"],["practice","Practice Log"],["insights","Insights"]];
 
 export default function App() {
-  const [rounds,  setRounds]  = useState([]);
+  const [rounds,  setRounds]  = useState(() => {
+    try { const s = localStorage.getItem("strokelab_rounds"); return s ? JSON.parse(s) : []; } catch (e) { return []; }
+  });
   const [tab,     setTab]     = useState("dash");
   const [form,    setForm]    = useState(emptyRound());
   const [editId,  setEditId]  = useState(null);
   const [nine,    setNine]    = useState(0);
   const [saved,       setSaved]       = useState(false);
   const [selectedRound, setSelectedRound] = useState(null);
-  const [practiceLogs, setPracticeLogs] = useState([]);
+  const [practiceLogs, setPracticeLogs] = useState(() => {
+    try { const s = localStorage.getItem("strokelab_practice"); return s ? JSON.parse(s) : []; } catch (e) { return []; }
+  });
+
+  // Persist to localStorage whenever data changes
+  useEffect(() => {
+    try { localStorage.setItem("strokelab_rounds", JSON.stringify(rounds)); } catch (e) {}
+  }, [rounds]);
+  useEffect(() => {
+    try { localStorage.setItem("strokelab_practice", JSON.stringify(practiceLogs)); } catch (e) {}
+  }, [practiceLogs]);
   const [practiceForm, setPracticeForm] = useState({ date: new Date().toISOString().split("T")[0], area: "Putting", drill: "", duration: 30, notes: "", made: null, att: null });
   const [roundTargets] = useState({ girMin: 11, puttsMax: 30, firMin: 8, hazMax: 1 });
 
@@ -957,14 +977,7 @@ export default function App() {
     if (!rSG.length) return <div style={{ color: T3, padding: 40, textAlign: "center" }}>No rounds yet.</div>;
 
     // Window helpers
-    const WINDOWS = [
-      { n: 1,  label: "Last Round" },
-      { n: 3,  label: "Last 3"     },
-      { n: 5,  label: "Last 5"     },
-      { n: 10, label: "Last 10"    },
-      { n: 20, label: "Last 20"    },
-      { n: 0,  label: "All"        },
-    ];
+    const WINDOWS = SG_WINDOWS;
     const windowRounds = sgWindow === 0 ? rSG : rSG.slice(-Math.min(sgWindow, rSG.length));
     const sgAvg = (key) => {
       const vals = windowRounds.map(r => parseFloat(r[key])).filter(v => !isNaN(v));
@@ -1721,6 +1734,223 @@ export default function App() {
             </table>
           </div>
         </Box>
+
+        {/* ===== TEE-SHOT DISPERSION (DECADE) ===== */}
+        <Box style={{ marginTop: 16 }}>
+          <Lbl t="Tee-Shot Dispersion (par 4 & 5, last 20)" />
+          {(() => {
+            const teeH = r20.flatMap(r => (r.holes||[]).filter(h => h.par >= 4 && h.teeResult));
+            const n = teeH.length;
+            if (!n) return <div style={{ color: T3, fontSize: 13, marginTop: 8 }}>No tee-result data yet. Log rounds with the new Tee Shot Result field.</div>;
+            const cats = [
+              ["fairway","Fairway",GN], ["rough","Rough",GL], ["bunker","Bunker",OR],
+              ["trees","Trees",OR], ["penalty","Penalty",RD]
+            ];
+            const counts = cats.map(([k,l,c]) => ({ k, l, c, n: teeH.filter(h => h.teeResult === k).length }));
+            const penRate = (counts.find(x=>x.k==="penalty").n / n * 100);
+            return (
+              <div style={{ marginTop: 10 }}>
+                {/* Stacked bar */}
+                <div style={{ display: "flex", height: 34, borderRadius: 8, overflow: "hidden", border: "1px solid " + BD }}>
+                  {counts.filter(x => x.n > 0).map(x => (
+                    <div key={x.k} title={x.l} style={{ width: (x.n/n*100)+"%", background: x.c, display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 11, fontWeight: 700 }}>
+                      {x.n/n >= 0.08 ? Math.round(x.n/n*100)+"%" : ""}
+                    </div>
+                  ))}
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginTop: 10 }}>
+                  {counts.map(x => (
+                    <div key={x.k} style={{ fontSize: 12, color: T2, display: "flex", alignItems: "center", gap: 5 }}>
+                      <span style={{ width: 10, height: 10, borderRadius: 2, background: x.c, display: "inline-block" }} />
+                      {x.l}: <b>{x.n}</b> ({Math.round(x.n/n*100)}%)
+                    </div>
+                  ))}
+                </div>
+                <div style={{ marginTop: 12, padding: "10px 12px", borderRadius: 8, background: penRate > 7 ? RDL : GNL, fontSize: 12, color: T2 }}>
+                  Penalty rate <b style={{ color: penRate > 7 ? RD : GN }}>{penRate.toFixed(1)}%</b> of driving holes.
+                  {" "}Scratch/+ players sit near 3-5%. {penRate > 7 ? "Tail risk is costing you - widen aim points away from trouble." : "Tail risk well controlled."}
+                </div>
+              </div>
+            );
+          })()}
+        </Box>
+
+        {/* ===== SG BY APPROACH DISTANCE BAND ===== */}
+        <Box style={{ marginTop: 16 }}>
+          <Lbl t="Approach Performance by Distance Band (last 20)" />
+          {(() => {
+            const bands = [
+              ["90","<100m"], ["115","100-125"], ["140","125-150"],
+              ["165","150-175"], ["190","175-200"], ["210","200m+"]
+            ];
+            const apprH = r20.flatMap(r => (r.holes||[]).filter(h => h.apprDist));
+            if (!apprH.length) return <div style={{ color: T3, fontSize: 13, marginTop: 8 }}>No approach-distance data yet. Log rounds with the new Approach Distance field.</div>;
+            const rows = bands.map(([val,label]) => {
+              const hs = apprH.filter(h => h.apprDist === val);
+              const girPct = hs.length ? Math.round(hs.filter(h=>h.gir).length/hs.length*100) : null;
+              const proxArr = hs.filter(h => h.gir && h.prox > 0).map(h => h.prox);
+              const avgProx = proxArr.length ? (proxArr.reduce((a,b)=>a+b,0)/proxArr.length).toFixed(1) : null;
+              return { label, n: hs.length, girPct, avgProx };
+            }).filter(r => r.n > 0);
+            // Tour GIR benchmarks by band (approx): closer = higher
+            const tourGIR = { "<100m":80, "100-125":72, "125-150":65, "150-175":56, "175-200":47, "200m+":38 };
+            return (
+              <div style={{ overflowX: "auto", marginTop: 8 }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                  <thead>
+                    <tr style={{ borderBottom: "2px solid " + BD, background: C2 }}>
+                      {["Band","Shots","GIR%","Tour GIR%","Avg Prox (m)","Read"].map(h =>
+                        <th key={h} style={{ padding: "7px 8px", textAlign: "center", color: T2, fontSize: 10, fontWeight: 700, textTransform: "uppercase" }}>{h}</th>)}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map(r => {
+                      const tg = tourGIR[r.label];
+                      const delta = r.girPct - tg;
+                      return (
+                        <tr key={r.label} style={{ borderBottom: "1px solid " + BD }}>
+                          <td style={{ padding: "6px 8px", fontWeight: 600 }}>{r.label}</td>
+                          <td style={{ padding: "6px 8px", textAlign: "center", color: T2 }}>{r.n}</td>
+                          <td style={{ padding: "6px 8px", textAlign: "center", fontWeight: 700, fontFamily: "monospace" }}>{r.girPct}%</td>
+                          <td style={{ padding: "6px 8px", textAlign: "center", color: T3, fontFamily: "monospace" }}>{tg}%</td>
+                          <td style={{ padding: "6px 8px", textAlign: "center", fontFamily: "monospace", color: T2 }}>{r.avgProx || "--"}</td>
+                          <td style={{ padding: "6px 8px", textAlign: "center", fontWeight: 700, color: delta >= 0 ? GN : delta >= -10 ? GL : RD }}>
+                            {delta >= 0 ? "+" : ""}{delta}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                <div style={{ fontSize: 11, color: T3, marginTop: 8, fontStyle: "italic" }}>
+                  Read column = your GIR% minus tour benchmark for that band. The most negative band is your highest-leverage practice zone.
+                </div>
+              </div>
+            );
+          })()}
+        </Box>
+
+        {/* ===== LIE: FAIRWAY vs ROUGH SCORING ===== */}
+        <Box style={{ marginTop: 16 }}>
+          <Lbl t="Scoring by Approach Lie (last 20)" />
+          {(() => {
+            const lieH = r20.flatMap(r => (r.holes||[]).filter(h => h.lie && h.par >= 4));
+            if (!lieH.length) return <div style={{ color: T3, fontSize: 13, marginTop: 8 }}>No lie data yet. Log rounds with the new Lie field.</div>;
+            const cats = [
+              ["fairway","Fairway",GN], ["lightRough","Light Rough",GL],
+              ["heavyRough","Heavy Rough",OR], ["fairwayBunker","Fwy Bunker",RD]
+            ];
+            const rows = cats.map(([k,l,c]) => {
+              const hs = lieH.filter(h => h.lie === k);
+              if (!hs.length) return null;
+              const avgPM = (hs.reduce((s,h)=>s+((h.score||h.par)-h.par),0)/hs.length);
+              const girPct = Math.round(hs.filter(h=>h.gir).length/hs.length*100);
+              return { l, c, n: hs.length, avgPM, girPct };
+            }).filter(Boolean);
+            const fwy = rows.find(r => r.l === "Fairway");
+            return (
+              <div style={{ marginTop: 8 }}>
+                {rows.map(r => (
+                  <div key={r.l} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                    <span style={{ width: 92, fontSize: 12, color: T2, fontWeight: 600 }}>{r.l}</span>
+                    <span style={{ width: 10, height: 10, borderRadius: 2, background: r.c }} />
+                    <span style={{ fontSize: 12, color: T3, width: 44 }}>n={r.n}</span>
+                    <span style={{ fontSize: 13, fontFamily: "monospace", fontWeight: 700, color: r.avgPM <= 0.2 ? GN : r.avgPM <= 0.6 ? GL : RD, width: 70 }}>
+                      {r.avgPM >= 0 ? "+" : ""}{r.avgPM.toFixed(2)}/hole
+                    </span>
+                    <span style={{ fontSize: 12, color: T2 }}>GIR {r.girPct}%</span>
+                  </div>
+                ))}
+                {fwy && rows.length > 1 && (
+                  <div style={{ marginTop: 10, padding: "10px 12px", borderRadius: 8, background: C2, fontSize: 12, color: T2 }}>
+                    {(() => {
+                      const rough = rows.find(r => r.l === "Light Rough") || rows.find(r => r.l === "Heavy Rough");
+                      if (!rough) return "Log more rough approaches to see the penalty.";
+                      const cost = (rough.avgPM - fwy.avgPM).toFixed(2);
+                      return <>Missing the fairway is costing you <b style={{ color: RD }}>{cost} strokes/hole</b> vs from the short grass. Over a round that is the driving-accuracy tax.</>;
+                    })()}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+        </Box>
+
+        {/* ===== PUTTING MAKE% BY DISTANCE ===== */}
+        <Box style={{ marginTop: 16 }}>
+          <Lbl t="Putting Make% vs Tour by Distance (last 20)" />
+          {(() => {
+            const puttH = r20.flatMap(r => (r.holes||[]).filter(h => h.puttDist > 0));
+            if (!puttH.length) return <div style={{ color: T3, fontSize: 13, marginTop: 8 }}>No first-putt distance data yet. Log rounds with the new First Putt Distance field.</div>;
+            const bands = [
+              [0,1.5,"0-1.5m",0.95], [1.5,2.5,"1.5-2.5m",0.78], [2.5,4,"2.5-4m",0.55],
+              [4,6,"4-6m",0.38], [6,9,"6-9m",0.24], [9,99,"9m+",0.12]
+            ];
+            const rows = bands.map(([lo,hi,label,tour]) => {
+              const hs = puttH.filter(h => h.puttDist >= lo && h.puttDist < hi);
+              if (!hs.length) return null;
+              const made = hs.filter(h => h.putts === 1).length;
+              const pct = made / hs.length;
+              return { label, n: hs.length, pct, tour, delta: pct - tour };
+            }).filter(Boolean);
+            return (
+              <div style={{ marginTop: 8 }}>
+                {rows.map(r => (
+                  <div key={r.label} style={{ marginBottom: 9 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 3 }}>
+                      <span style={{ color: T2, fontWeight: 600 }}>{r.label} <span style={{ color: T3, fontWeight: 400 }}>(n={r.n})</span></span>
+                      <span style={{ fontFamily: "monospace", color: r.delta >= 0 ? GN : RD, fontWeight: 700 }}>
+                        {Math.round(r.pct*100)}% <span style={{ color: T3 }}>vs {Math.round(r.tour*100)}%</span>
+                      </span>
+                    </div>
+                    <div style={{ position: "relative", height: 8, background: C2, borderRadius: 4 }}>
+                      <div style={{ position: "absolute", left: 0, top: 0, height: 8, width: (r.pct*100)+"%", background: r.delta >= 0 ? GN : RD, borderRadius: 4 }} />
+                      <div style={{ position: "absolute", left: (r.tour*100)+"%", top: -2, height: 12, width: 2, background: T1 }} title="Tour benchmark" />
+                    </div>
+                  </div>
+                ))}
+                <div style={{ fontSize: 11, color: T3, marginTop: 6, fontStyle: "italic" }}>Black line = tour make%. Bar past the line = gaining; short of it = losing.</div>
+              </div>
+            );
+          })()}
+        </Box>
+
+        {/* ===== DECISION QUALITY (DECADE process) ===== */}
+        <Box style={{ marginTop: 16 }}>
+          <Lbl t="Decision Quality - Process vs Outcome (last 20)" />
+          {(() => {
+            const decH = r20.flatMap(r => (r.holes||[]).filter(h => h.decision));
+            if (!decH.length) return <div style={{ color: T3, fontSize: 13, marginTop: 8 }}>No decision data yet. Tag holes Good/Bad decision in the entry screen.</div>;
+            const good = decH.filter(h => h.decision === "good");
+            const bad  = decH.filter(h => h.decision === "bad");
+            const goodPM = good.length ? (good.reduce((s,h)=>s+((h.score||h.par)-h.par),0)/good.length) : null;
+            const badPM  = bad.length ? (bad.reduce((s,h)=>s+((h.score||h.par)-h.par),0)/bad.length) : null;
+            const goodRate = Math.round(good.length/decH.length*100);
+            return (
+              <div style={{ marginTop: 8 }}>
+                <div style={{ display: "flex", gap: 12 }}>
+                  <div style={{ flex: 1, padding: "12px 14px", borderRadius: 10, background: GNL, textAlign: "center" }}>
+                    <div style={{ fontSize: 26, fontWeight: 800, color: GN, fontFamily: "monospace" }}>{goodRate}%</div>
+                    <div style={{ fontSize: 11, color: T2, marginTop: 2 }}>Good decisions ({good.length})</div>
+                    {goodPM != null && <div style={{ fontSize: 12, color: T2, marginTop: 4 }}>Avg <b>{goodPM >= 0 ? "+" : ""}{goodPM.toFixed(2)}</b>/hole</div>}
+                  </div>
+                  <div style={{ flex: 1, padding: "12px 14px", borderRadius: 10, background: RDL, textAlign: "center" }}>
+                    <div style={{ fontSize: 26, fontWeight: 800, color: RD, fontFamily: "monospace" }}>{100-goodRate}%</div>
+                    <div style={{ fontSize: 11, color: T2, marginTop: 2 }}>Bad decisions ({bad.length})</div>
+                    {badPM != null && <div style={{ fontSize: 12, color: T2, marginTop: 4 }}>Avg <b>{badPM >= 0 ? "+" : ""}{badPM.toFixed(2)}</b>/hole</div>}
+                  </div>
+                </div>
+                {goodPM != null && badPM != null && (
+                  <div style={{ marginTop: 12, padding: "10px 12px", borderRadius: 8, background: C2, fontSize: 12, color: T2 }}>
+                    Bad-process holes cost <b style={{ color: RD }}>{(badPM - goodPM).toFixed(2)} strokes/hole</b> more than good-process holes.
+                    {" "}DECADE's premise: tighten process and the scores follow. Target {">"}85% good decisions.
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+        </Box>
+
       </div>
     );
   }
@@ -2547,7 +2777,7 @@ export default function App() {
           <Box style={{ borderLeft: "4px solid " + RD, background: RDL }}>
             <div style={{ fontSize: 13, fontWeight: 800, color: RD, marginBottom: 4 }}>Current Practice Priority</div>
             <div style={{ fontSize: 13, color: T1 }}>
-              Based on your last {WINDOWS.find(w=>w.n===10).label} SG data, your biggest gain is in <b>{weakArea.area}</b> (SG: {weakArea.sg > 0 ? "+" : ""}{weakArea.sg.toFixed(2)}).
+              Based on your last {SG_WINDOWS.find(w=>w.n===10).label} SG data, your biggest gain is in <b>{weakArea.area}</b> (SG: {weakArea.sg > 0 ? "+" : ""}{weakArea.sg.toFixed(2)}).
               {allocData.length > 0 && allocData[0].area !== weakArea.area && (
                 <span style={{ color: RD }}> You have been spending most time on <b>{allocData[0].area}</b> -- consider rebalancing.</span>
               )}
