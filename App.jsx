@@ -159,12 +159,13 @@ const PLAN_FIELDS = [["tee","Tee"],["avoid","Avoid"],["approach","Approach"],["g
 function parsePlan(s) {
   s = s || "";
   const out = { tee:"", avoid:"", approach:"", green:"" };
-  const hasLabel = /(?:^|\n)\s*(Tee|Avoid|Approach|Green)\s*:/i.test(s);
+  const hasLabel = /(?:^|\n)[ \t]*(Tee|Avoid|Approach|Green)[ \t]*:/i.test(s);
   if (!hasLabel) { out.tee = s.trim(); return out; }   // legacy free-text -> Tee line
+  const strip = (v) => v.replace(/(?:Tee|Avoid|Approach|Green)[ \t]*:/gi, " ").replace(/[ \t]+/g, " ").trim();
   PLAN_FIELDS.forEach(([k,lab]) => {
-    const re = new RegExp(lab + "\\s*:\\s*([\\s\\S]*?)(?=(?:\\n\\s*(?:Tee|Avoid|Approach|Green)\\s*:)|$)", "i");
+    const re = new RegExp(lab + "[ \\t]*:[ \\t]*([\\s\\S]*?)(?=(?:\\n[ \\t]*(?:Tee|Avoid|Approach|Green)[ \\t]*:)|$)", "i");
     const m = s.match(re);
-    if (m) out[k] = m[1].trim();
+    if (m) out[k] = strip(m[1]);
   });
   return out;
 }
