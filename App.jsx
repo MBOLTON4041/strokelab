@@ -102,15 +102,28 @@ function calcSG(r) {
   return { sgPutt, sgOTT, sgApp, sgATG, sgTotal: parseFloat((sgPutt + sgOTT + sgApp + sgATG).toFixed(2)) };
 }
 
-function calcHcp(rounds) {
-  if (!rounds.length) return null;
-  const diffs = rounds.slice(-20)
-    .map(r => parseFloat(((r.score - (r.rating || TOTAL_PAR)) * 113 / (r.slope || 130)).toFixed(1)))
-    .sort((a, b) => a - b);
+function roundDiff(r) {
+  if (r.diff != null && !isNaN(r.diff)) return parseFloat(r.diff);          // seeded/history differential
+  if (r.score == null) return null;
+  return parseFloat(((r.score - (r.rating || TOTAL_PAR)) * 113 / (r.slope || 130)).toFixed(1));
+}
+// Unified, date-sorted differential series from full rounds + seeded history
+function buildDiffSeries(rounds, hist) {
+  const fromRounds = (rounds || []).map(r => ({ date: r.date || "", diff: roundDiff(r), score: r.score, isHist: false }));
+  const fromHist   = (hist || []).map(h => ({ date: h.date || "", diff: (h.diff != null ? parseFloat(h.diff) : null), score: null, isHist: true, course: h.course }));
+  return [...fromRounds, ...fromHist]
+    .filter(d => d.diff != null && !isNaN(d.diff))
+    .sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+}
+function hcpFromSeries(series) {
+  if (!series.length) return null;
+  const diffs = series.slice(-20).map(d => d.diff).sort((a, b) => a - b);
   const n = diffs.length;
   const take = n < 6 ? 1 : n < 9 ? 2 : n < 12 ? 3 : n < 15 ? 4 : n < 17 ? 5 : n < 19 ? 6 : n === 19 ? 7 : 8;
   return parseFloat((diffs.slice(0, take).reduce((a, b) => a + b, 0) / take).toFixed(1));
 }
+// Back-compat: handicap from full rounds only
+function calcHcp(rounds) { return hcpFromSeries(buildDiffSeries(rounds, [])); }
 
 function emptyHoles() {
   return HOLES.map(h => ({
@@ -268,7 +281,7 @@ function Btn({ label, active, onClick, ac, small }) {
   );
 }
 
-const TABS = [["dash","Dashboard"],["enter","+ Log Round"],["sg","Strokes Gained"],["holes","Hole Analysis"],["clubs","Club Stats"],["trend","Trends"],["practice","Practice Log"],["insights","Insights"]];
+const TABS = [["dash","Dashboard"],["enter","+ Log Round"],["sg","Strokes Gained"],["holes","Hole Analysis"],["clubs","Club Stats"],["trend","Trends"],["practice","Practice Log"],["insights","Insights"],["hist","Hcp Setup"]];
 
 export default function App() {
   const [rounds,  setRounds]  = useState(() => {
@@ -314,6 +327,15 @@ export default function App() {
   useEffect(() => {
     try { localStorage.setItem("strokelab_draft", JSON.stringify({ form, holeIdx })); } catch (e) {}
   }, [form, holeIdx]);
+
+  // Seeded handicap history (date + course + GA differential), feeds handicap only
+  const [hcpHistory, setHcpHistory] = useState(() => {
+    try { const s = localStorage.getItem("strokelab_hcphistory"); return s ? JSON.parse(s) : []; } catch (e) { return []; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("strokelab_hcphistory", JSON.stringify(hcpHistory)); } catch (e) {}
+  }, [hcpHistory]);
+  const [histDraft, setHistDraft] = useState({ date: new Date().toISOString().split("T")[0], course: "", diff: "" });
   const getHolePlan = (course, holeNum) => (coursePlans[course] && coursePlans[course][holeNum]) || "";
   const setHolePlan = (course, holeNum, text) => {
     if (!course) return;
@@ -337,7 +359,7 @@ export default function App() {
   const fileRef = useRef();
 
   const rSG  = useMemo(() => rounds.map(r => ({ ...r, ...calcSG(r) })), [rounds]);
-  const hcp  = useMemo(() => calcHcp(rounds), [rounds]);
+  const hcp  = useMemo(() => hcpFromSeries(buildDiffSeries(rounds, hcpHistory)), [rounds, hcpHistory]);
   const last = n => rSG.slice(-Math.min(n, rSG.length));
 
   const s10 = useMemo(() => {
@@ -418,12 +440,12 @@ export default function App() {
           <KPI label="Hazards/Rd (10r)" value={s10 && s10.hazards} target="0-1" color={s10 && s10.hazards <= 1 ? GN : s10 && s10.hazards <= 2 ? GL : RD} />
         </div>
         {/* HANDICAP TRAJECTORY */}
-        {rSG.length >= 3 && (() => {
-          // Compute rolling handicap every round
-          const hcpSeries = rSG.map((_, i) => {
-            const slice = rSG.slice(0, i + 1);
-            const h = calcHcp(slice);
-            return { date: (rSG[i].date || "").slice(5), hcp: h, score: rSG[i].score };
+        {(buildDiffSeries(rounds, hcpHistory).length >= 3) && (() => {
+          // Rolling handicap across the unified (history + logged) differential series
+          const series = buildDiffSeries(rounds, hcpHistory);
+          const hcpSeries = series.map((_, i) => {
+            const h = hcpFromSeries(series.slice(0, i + 1));
+            return { date: (series[i].date || "").slice(5), hcp: h, score: series[i].score };
           }).filter(d => d.hcp !== null);
           // Simple linear trend on last 5 points
           const recent = hcpSeries.slice(-5);
@@ -610,6 +632,87 @@ export default function App() {
   }
 
   // -- LOG ROUND --
+  function HcpSetup() {
+    const series = buildDiffSeries(rounds, hcpHistory);
+    const last20 = series.slice(-20);
+    const curHcp = hcpFromSeries(series);
+    const sorted = [...hcpHistory].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+    const NAVY = "#18213a", WHT = "#ffffff";
+    const lbl = { fontSize: 11, fontWeight: 700, color: T3, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 };
+    const inp = { background: C2, border: "1px solid " + BD, borderRadius: 8, padding: "11px 12px", fontSize: 15, color: T1, fontFamily: "inherit", width: "100%" };
+
+    function addRow() {
+      const d = parseFloat(histDraft.diff);
+      if (isNaN(d) || !histDraft.date) return;
+      setHcpHistory(prev => [...prev, { id: Date.now(), date: histDraft.date, course: histDraft.course.trim(), diff: parseFloat(d.toFixed(1)) }]);
+      setHistDraft(h => ({ ...h, course: "", diff: "" }));
+    }
+    function delRow(id) { setHcpHistory(prev => prev.filter(r => r.id !== id)); }
+
+    return (
+      <div style={{ maxWidth: 480, margin: "0 auto", padding: "0 0 80px" }}>
+        <div style={{ background: CARD, borderRadius: 12, padding: "16px", border: "1px solid " + BD, marginBottom: 12 }}>
+          <Lbl t="Seed Your Handicap History" />
+          <div style={{ fontSize: 13, color: T2, lineHeight: 1.5, marginTop: 4 }}>
+            Enter your recent rounds from the Golf Australia app using the <b>Gross Diff</b> column (the sloped differential). The handicap uses the best 8 of your most recent 20. As you log full rounds here, they replace the oldest seeded entries automatically.
+          </div>
+          <div style={{ display: "flex", gap: 14, marginTop: 14 }}>
+            <div style={{ textAlign: "center" }}>
+              <div style={{ fontFamily: "monospace", fontSize: 30, fontWeight: 800, color: BL }}>{curHcp != null ? (curHcp > 0 ? "+" + curHcp : String(curHcp)) : "--"}</div>
+              <div style={{ fontSize: 10, color: T3 }}>Current Index</div>
+            </div>
+            <div style={{ textAlign: "center" }}>
+              <div style={{ fontFamily: "monospace", fontSize: 30, fontWeight: 800, color: T2 }}>{series.length}</div>
+              <div style={{ fontSize: 10, color: T3 }}>Rounds tracked</div>
+            </div>
+            <div style={{ textAlign: "center" }}>
+              <div style={{ fontFamily: "monospace", fontSize: 30, fontWeight: 800, color: T2 }}>{Math.min(series.length, 20)}/20</div>
+              <div style={{ fontSize: 10, color: T3 }}>In handicap window</div>
+            </div>
+          </div>
+        </div>
+
+        <div style={{ background: CARD, borderRadius: 12, padding: "16px", border: "1px solid " + BD, marginBottom: 12 }}>
+          <div style={lbl}>Add a Past Round</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1.1fr 1.3fr 0.8fr", gap: 8, marginBottom: 10 }}>
+            <div>
+              <div style={{ fontSize: 10, color: T3, marginBottom: 3 }}>Date</div>
+              <input type="date" value={histDraft.date} onChange={e => setHistDraft(h => ({ ...h, date: e.target.value }))} style={inp} />
+            </div>
+            <div>
+              <div style={{ fontSize: 10, color: T3, marginBottom: 3 }}>Course (optional)</div>
+              <input value={histDraft.course} onChange={e => setHistDraft(h => ({ ...h, course: e.target.value }))} placeholder="e.g. Huntingdale" style={inp} />
+            </div>
+            <div>
+              <div style={{ fontSize: 10, color: T3, marginBottom: 3 }}>Gross Diff</div>
+              <input type="number" inputMode="decimal" step="0.1" value={histDraft.diff} onChange={e => setHistDraft(h => ({ ...h, diff: e.target.value }))} placeholder="3.1" style={inp} />
+            </div>
+          </div>
+          <button onClick={addRow} style={{ width: "100%", background: GN, color: WHT, border: "none", borderRadius: 10, padding: "13px 0", fontSize: 15, fontWeight: 800, cursor: "pointer" }}>
+            Add Round
+          </button>
+        </div>
+
+        <div style={{ background: CARD, borderRadius: 12, padding: "16px", border: "1px solid " + BD }}>
+          <div style={lbl}>Seeded Rounds ({hcpHistory.length})</div>
+          {!hcpHistory.length && <div style={{ fontSize: 13, color: T3, marginTop: 6 }}>None yet. Add your last ~20 rounds above so your handicap starts from the right place.</div>}
+          {sorted.map(r => {
+            const inWindow = last20.some(d => d.isHist && d.date === r.date && d.diff === r.diff);
+            return (
+              <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 0", borderBottom: "1px solid " + BD }}>
+                <span style={{ fontFamily: "monospace", fontSize: 15, fontWeight: 700, color: BL, width: 44 }}>{r.diff.toFixed(1)}</span>
+                <span style={{ fontSize: 13, color: T2, width: 92 }}>{r.date}</span>
+                <span style={{ fontSize: 12, color: T3, flex: 1 }}>{r.course || ""}</span>
+                {inWindow && <span style={{ fontSize: 9, color: GN, fontWeight: 700, textTransform: "uppercase" }}>in 20</span>}
+                <button onClick={() => delRow(r.id)} style={{ background: "none", border: "none", color: RD, fontSize: 18, cursor: "pointer", lineHeight: 1, padding: "0 4px" }}>x</button>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
   function EnterRound() {
     const h   = form.holes[holeIdx];
     const gi  = holeIdx;
@@ -3173,6 +3276,7 @@ export default function App() {
         {tab === "trend"    && <Trends />}
         {tab === "practice"  && <PracticeLog />}
         {tab === "insights" && <Insights />}
+          {tab === "hist"     && HcpSetup()}
       </div>
       <div style={{ borderTop: "1px solid " + BD, padding: "12px 24px", display: "flex", justifyContent: "space-between", fontSize: 10, color: T3, maxWidth: 1200, margin: "0 auto" }}>
         <span>StrokeLab | SG: Broadie (2014) | DataGolf / DECADE (Fawcett) | Blue R73 S141 | Black R75 S143</span>
