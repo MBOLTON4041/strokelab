@@ -258,10 +258,19 @@ export default function App() {
     try { const s = localStorage.getItem("strokelab_rounds"); return s ? JSON.parse(s) : []; } catch (e) { return []; }
   });
   const [tab,     setTab]     = useState("dash");
-  const [form,    setForm]    = useState(emptyRound());
+  const [form,    setForm]    = useState(() => {
+    try {
+      const s = localStorage.getItem("strokelab_draft");
+      if (s) { const d = JSON.parse(s); if (d && d.form && Array.isArray(d.form.holes) && d.form.holes.length === 18) return d.form; }
+    } catch (e) {}
+    return emptyRound();
+  });
   const [editId,  setEditId]  = useState(null);
   const [nine,    setNine]    = useState(0);
-  const [holeIdx, setHoleIdx] = useState(0);          // entry: current hole (lifted from EnterRound for stable identity)
+  const [holeIdx, setHoleIdx] = useState(() => {
+    try { const s = localStorage.getItem("strokelab_draft"); if (s) { const d = JSON.parse(s); if (d && typeof d.holeIdx === "number") return d.holeIdx; } } catch (e) {}
+    return 0;
+  });
   const [lastTeeClub, setLastTeeClub] = useState("Driver");
   const [saved,       setSaved]       = useState(false);
   const [selectedRound, setSelectedRound] = useState(null);
@@ -284,6 +293,10 @@ export default function App() {
   useEffect(() => {
     try { localStorage.setItem("strokelab_courseplans", JSON.stringify(coursePlans)); } catch (e) {}
   }, [coursePlans]);
+  // Auto-save the in-progress round so a mid-round reload never loses data
+  useEffect(() => {
+    try { localStorage.setItem("strokelab_draft", JSON.stringify({ form, holeIdx })); } catch (e) {}
+  }, [form, holeIdx]);
   const getHolePlan = (course, holeNum) => (coursePlans[course] && coursePlans[course][holeNum]) || "";
   const setHolePlan = (course, holeNum, text) => {
     if (!course) return;
@@ -299,7 +312,8 @@ export default function App() {
     if (window.confirm("Delete ALL rounds and practice logs? This cannot be undone.")) {
       setRounds([]);
       setPracticeLogs([]);
-      try { localStorage.removeItem("strokelab_rounds"); localStorage.removeItem("strokelab_practice"); } catch(e) {}
+      setForm(emptyRound()); setHoleIdx(0);
+      try { localStorage.removeItem("strokelab_rounds"); localStorage.removeItem("strokelab_practice"); localStorage.removeItem("strokelab_draft"); } catch(e) {}
       setTab("dash");
     }
   };
@@ -709,6 +723,16 @@ export default function App() {
             <span style={{ background: runPM > 0 ? RDL : runPM < 0 ? GNL : C2, borderRadius: 6, padding: "4px 10px", fontWeight: 700, color: runPM > 0 ? RD : runPM < 0 ? GN : T2, marginLeft: "auto" }}>
               Total: {runScore} ({runPM > 0 ? "+" : ""}{runPM})
             </span>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 10 }}>
+            <span style={{ fontSize: 11, color: GN, display: "flex", alignItems: "center", gap: 5 }}>
+              <span style={{ width: 7, height: 7, borderRadius: "50%", background: GN, display: "inline-block" }} />
+              Auto-saving - safe to leave mid-round
+            </span>
+            <button onClick={() => { if (window.confirm("Discard the round in progress and start a fresh one?")) { setForm(emptyRound()); setHoleIdx(0); } }}
+              style={{ background: "none", border: "1px solid " + BD, color: T2, borderRadius: 6, padding: "5px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+              New Round
+            </button>
           </div>
         </div>
 
