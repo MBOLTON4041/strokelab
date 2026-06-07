@@ -30,6 +30,7 @@ const BAG = [
   { name: "Mini",    loft: 13.5, carry: 230, tee: true,  appr: false },
   { name: "4 Wood",  loft: 19,   carry: 220, tee: true,  appr: true  },
   { name: "Hybrid",  loft: 21,   carry: 210, tee: true,  appr: true  },
+  { name: "2 Iron",  loft: 18,   carry: 195, tee: true,  appr: true  },
   { name: "4 Iron",  loft: 22,   carry: 180, tee: false, appr: true  },
   { name: "5 Iron",  loft: 25,   carry: 170, tee: false, appr: true  },
   { name: "6 Iron",  loft: 28,   carry: 160, tee: false, appr: true  },
@@ -688,7 +689,7 @@ export default function App() {
       );
     }
 
-    const CLUB_OPTS = ["Driver","Mini","4 Wood","Hybrid","4 Iron","5 Iron","6 Iron","7 Iron","8 Iron","9 Iron","PW","SW","LW"];
+    const CLUB_OPTS = ["Driver","Mini","4 Wood","Hybrid","2 Iron","4 Iron","5 Iron","6 Iron","7 Iron","8 Iron","9 Iron","PW","SW","LW"];
 
     return (
       <div style={{ maxWidth: 480, margin: "0 auto", padding: "0 0 80px" }}>
