@@ -94,7 +94,7 @@ function calcSG(r) {
   }
 
   const sgOTT  = parseFloat(((fw - 0.62) * (r.fairwaysTotal || 14) * 0.30 + ((r.avgDrive || 238) - 238) / 9 * 0.09).toFixed(2));
-  const proxAdj = r.girsHit > 0 ? ((22 - avgProxFt) / 8) * 0.12 * r.girsHit : 0;  // 22 ft baseline, now comparing ft to ft
+  const proxAdj = r.girsHit > 0 ? ((30 - avgProxFt) / 10) * 0.08 * r.girsHit : 0;  // 30 ft = scratch proximity on greens hit; secondary refinement
   const sgApp  = parseFloat(((gir - 0.59) * 18 * 0.40 + proxAdj).toFixed(2));   // 0.59 = scratch GIR
   const att = r.udAttempts || 0;
   const sc  = att > 0 ? r.udMade / att : 0.50;
