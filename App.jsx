@@ -120,11 +120,17 @@ function hcpFromSeries(series) {
   if (!series.length) return null;
   const diffs = series.slice(-20).map(d => d.diff).sort((a, b) => a - b);
   const n = diffs.length;
-  const take = n < 6 ? 1 : n < 9 ? 2 : n < 12 ? 3 : n < 15 ? 4 : n < 17 ? 5 : n < 19 ? 6 : n === 19 ? 7 : 8;
+  const take = Math.min(8, n);                          // average of best 8 (or all available if fewer)
   return parseFloat((diffs.slice(0, take).reduce((a, b) => a + b, 0) / take).toFixed(1));
 }
 // Back-compat: handicap from full rounds only
 function calcHcp(rounds) { return hcpFromSeries(buildDiffSeries(rounds, [])); }
+// Golf display convention: index of 3.0 shows "3.0"; a plus handicap (better than scratch) shows "+2.0"
+function fmtHcp(v) {
+  if (v == null) return "--";
+  if (v < 0) return "+" + Math.abs(v).toFixed(1);
+  return v.toFixed(1);
+}
 
 function emptyHoles() {
   return HOLES.map(h => ({
@@ -466,7 +472,7 @@ export default function App() {
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(6,1fr)", gap: 10 }}>
-          <KPI label="Handicap Index" value={hcp != null ? (hcp > 0 ? "+" + hcp : String(hcp)) : null} target="+2.0" color={hcpColor} />
+          <KPI label="Handicap Index" value={hcp != null ? fmtHcp(hcp) : null} target="+2.0" color={hcpColor} />
           <KPI label="Avg Score (10r)" value={s10 && s10.score} target={String(TOTAL_PAR-2)} color={s10 && s10.score <= TOTAL_PAR-2 ? GN : s10 && s10.score <= TOTAL_PAR ? GL : RD} />
           <KPI label="FIR % (10r)" value={s10 && s10.fir} unit="%" target="65%" color={s10 && s10.fir >= 65 ? GN : s10 && s10.fir >= 55 ? GL : RD} />
           <KPI label="GIR % (10r)" value={s10 && s10.gir} unit="%" target="74%" color={s10 && s10.gir >= 74 ? GN : s10 && s10.gir >= 64 ? GL : RD} />
@@ -478,7 +484,7 @@ export default function App() {
           const series = buildDiffSeries(rounds, hcpHistory);
           const last20 = series.slice(-20);
           const n = last20.length;
-          const take = n < 6 ? 1 : n < 9 ? 2 : n < 12 ? 3 : n < 15 ? 4 : n < 17 ? 5 : n < 19 ? 6 : n === 19 ? 7 : 8;
+          const take = Math.min(8, n);   // top 8 counting differentials
           // best `take` differentials (the counting scores)
           const ranked = last20.map((d, i) => ({ ...d, i })).sort((a, b) => a.diff - b.diff);
           const counting = ranked.slice(0, take);
@@ -491,7 +497,7 @@ export default function App() {
                 </div>
                 <div style={{ textAlign: "right" }}>
                   <div style={{ fontFamily: "monospace", fontSize: 26, fontWeight: 800, color: hcpColor }}>
-                    {hcp != null ? (hcp > 0 ? "+" + hcp : String(hcp)) : "--"}
+                    {fmtHcp(hcp)}
                   </div>
                   <div style={{ fontSize: 10, color: T3 }}>Current Index</div>
                 </div>
@@ -667,7 +673,7 @@ export default function App() {
           </div>
           <div style={{ display: "flex", gap: 14, marginTop: 14 }}>
             <div style={{ textAlign: "center" }}>
-              <div style={{ fontFamily: "monospace", fontSize: 30, fontWeight: 800, color: BL }}>{curHcp != null ? (curHcp > 0 ? "+" + curHcp : String(curHcp)) : "--"}</div>
+              <div style={{ fontFamily: "monospace", fontSize: 30, fontWeight: 800, color: BL }}>{fmtHcp(curHcp)}</div>
               <div style={{ fontSize: 10, color: T3 }}>Current Index</div>
             </div>
             <div style={{ textAlign: "center" }}>
@@ -1608,7 +1614,7 @@ export default function App() {
       };
     });
 
-    const sorted = [...holeData].filter(h => h.n >= 2).sort((a,b) => b.pm - a.pm);
+    const sorted = [...holeData].filter(h => h.n >= 1).sort((a,b) => b.pm - a.pm);
     const worst6 = sorted.slice(0, 6);
     const best6  = sorted.slice(-6).reverse();
 
@@ -3267,7 +3273,7 @@ export default function App() {
         <div style={{ display: "flex", gap: 8, marginLeft: "auto", alignItems: "center" }}>
           {hcp !== null && (
             <div style={{ fontSize: 12, color: T1, background: BLL, border: "1px solid " + BD, borderRadius: 5, padding: "4px 10px", fontWeight: 600 }}>
-              HCP: <span style={{ color: BL, fontFamily: "monospace" }}>{hcp > 0 ? "+" + hcp : hcp}</span>
+              HCP: <span style={{ color: BL, fontFamily: "monospace" }}>{fmtHcp(hcp)}</span>
             </div>
           )}
           <button onClick={clearAllData} style={{ background: "#fff0f0", color: "#c0392b", border: "1px solid #fcc", borderRadius: 6, padding: "4px 10px", fontSize: 11, cursor: "pointer" }}>
