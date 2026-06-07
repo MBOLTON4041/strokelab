@@ -138,13 +138,15 @@ function emptyHoles() {
     fir: h.p >= 4 ? null : undefined,           // legacy boolean kept for back-compat
     teeResult: null,                             // "fairway"|"rough"|"bunker"|"trees"|"penalty"
     firMiss: null, teeClub: null,
-    gir: false, prox: 20, distToHole: null, approachClub: null,
+    gir: false, greenHit: null, prox: 20, distToHole: null, approachClub: null,
     apprDist: null,                              // distance approach was hit FROM (m)
     lie: null,                                   // "fairway"|"lightRough"|"heavyRough"|"fairwayBunker"
     missDir: null, udAtt: false, udMade: false, udType: null, // "chip" | "bunker"
+    udProx: null,                                // proximity (m) after chip/bunker shot
     sand: false, sandSave: false,
     hazard: false, hazardType: null,
     puttDist: null,                              // first putt distance in metres (every hole)
+    puttBreak: null,                             // "LtoR"|"RtoL"|"uphill"|"downhill"|"double"
     decision: null,                              // "good" | "bad" process flag
     notes: ""
   }));
@@ -173,6 +175,7 @@ function aggHoles(holes) {
     fairwaysHit:   firHoles.filter(firHit).length,
     fairwaysTotal: firHoles.length,
     girsHit:       girHoles.length,
+    greensHit:     holes.filter(h => (h.greenHit == null ? h.gir : h.greenHit) === true).length,
     avgProxFt:     girHoles.length ? Math.round(girHoles.reduce((s, h) => s + (h.prox || 25), 0) / girHoles.length) : 25,
     udMade:        missHoles.filter(h => h.udMade).length,
     udAttempts:    missHoles.length,
@@ -288,7 +291,7 @@ function Btn({ label, active, onClick, ac, small }) {
   );
 }
 
-const TABS = [["dash","Dashboard"],["enter","+ Log Round"],["sg","Strokes Gained"],["holes","Hole Analysis"],["clubs","Club Stats"],["trend","Trends"],["practice","Practice Log"],["insights","Insights"],["hist","Hcp Setup"]];
+const TABS = [["dash","Dashboard"],["enter","+ Log Round"],["sg","Strokes Gained"],["holes","Hole Analysis"],["gameplan","Game Plan"],["clubs","Club Stats"],["trend","Trends"],["practice","Practice Log"],["insights","Insights"],["hist","Hcp Setup"]];
 
 export default function App() {
   const [rounds,  setRounds]  = useState(() => {
@@ -351,6 +354,7 @@ export default function App() {
     try { localStorage.setItem("strokelab_hcphistory", JSON.stringify(hcpHistory)); } catch (e) {}
   }, [hcpHistory]);
   const [histDraft, setHistDraft] = useState({ date: new Date().toISOString().split("T")[0], course: "", diff: "" });
+  const [gpCourse, setGpCourse] = useState("");
   const getHolePlan = (course, holeNum) => (coursePlans[course] && coursePlans[course][holeNum]) || "";
   const setHolePlan = (course, holeNum, text) => {
     if (!course) return;
@@ -728,6 +732,118 @@ export default function App() {
     );
   }
 
+  function GamePlan() {
+    const NAVY = "#18213a", WHT = "#ffffff";
+    // Courses that have either rounds or saved plans
+    const courseSet = new Set();
+    rounds.forEach(r => { if (r.course) courseSet.add(r.course); });
+    Object.keys(coursePlans || {}).forEach(c => { if (c) courseSet.add(c); });
+    const courses = [...courseSet];
+    // most-played course as default
+    const playCount = {};
+    rounds.forEach(r => { if (r.course) playCount[r.course] = (playCount[r.course]||0)+1; });
+    const defCourse = courses.sort((a,b) => (playCount[b]||0)-(playCount[a]||0))[0] || "";
+    const course = gpCourse || defCourse;
+
+    if (!courses.length) {
+      return (
+        <div style={{ maxWidth: 480, margin: "0 auto", padding: "40px 16px", textAlign: "center", color: T3 }}>
+          <div style={{ fontSize: 16, fontWeight: 700, color: T1, marginBottom: 8 }}>Game Plan</div>
+          <div style={{ fontSize: 13, lineHeight: 1.5 }}>Log a round or set a course name, then your per-hole strategy and the knowledge you build will live here. Plans you write on the entry screen show up here too -- this is the repository they feed into.</div>
+        </div>
+      );
+    }
+
+    const courseRounds = rounds.filter(r => r.course === course);
+    const lblS = { fontSize: 11, fontWeight: 700, color: T3, textTransform: "uppercase", letterSpacing: "0.06em" };
+
+    // Per-hole accumulated knowledge for this course
+    const holeStats = (holeNum) => {
+      const hs = courseRounds.map(r => (r.holes||[]).find(h => h.hole === holeNum)).filter(Boolean);
+      if (!hs.length) return { n: 0 };
+      const par = hs[0].par;
+      const avgScore = hs.reduce((s,h)=>s+(h.score||par),0)/hs.length;
+      const firHit = (h) => h.teeResult ? h.teeResult==="fairway" : h.fir===true;
+      const teeH = hs.filter(h => h.par>=4 && (h.teeResult!=null || h.fir!=null));
+      const firPct = teeH.length ? Math.round(teeH.filter(firHit).length/teeH.length*100) : null;
+      const greenH = hs.filter(h => (h.greenHit==null?h.gir:h.greenHit)!=null);
+      const ghPct = greenH.length ? Math.round(greenH.filter(h => (h.greenHit==null?h.gir:h.greenHit)===true).length/greenH.length*100) : null;
+      // miss patterns
+      const missCount = { L:0, R:0, S:0, Lg:0 };
+      hs.forEach(h => { if (h.missDir) { const k = h.missDir==="Sh"?"S":h.missDir; if (missCount[k]!=null) missCount[k]++; } });
+      const topMiss = Object.entries(missCount).filter(x=>x[1]>0).sort((a,b)=>b[1]-a[1])[0];
+      const teeMissCount = {};
+      teeH.forEach(h => { if (!firHit(h) && h.teeResult) teeMissCount[h.teeResult]=(teeMissCount[h.teeResult]||0)+1; });
+      const proxArr = hs.filter(h => (h.greenHit==null?h.gir:h.greenHit)===true && h.prox>0).map(h=>h.prox);
+      const avgProx = proxArr.length ? (proxArr.reduce((a,b)=>a+b,0)/proxArr.length).toFixed(1) : null;
+      const missLabel = { L:"left", R:"right", S:"short", Lg:"long" };
+      return { n: hs.length, par, avgScore, firPct, ghPct, topMiss: topMiss?missLabel[topMiss[0]]:null, avgProx };
+    };
+
+    return (
+      <div style={{ maxWidth: 560, margin: "0 auto", padding: "0 0 90px" }}>
+        <div style={{ background: CARD, borderRadius: 12, padding: "14px 16px", border: "1px solid " + BD, marginBottom: 12 }}>
+          <Lbl t="Game Plan -- Course Knowledge Repository" />
+          <div style={{ fontSize: 12, color: T2, lineHeight: 1.5, margin: "4px 0 10px" }}>
+            Everything you learn about a course, hole by hole. The plan for each hole is the same one that greets you on the entry screen -- refine it here from the accumulated data below it.
+          </div>
+          <div style={lblS}>Course</div>
+          <select value={course} onChange={e => setGpCourse(e.target.value)}
+            style={{ width: "100%", background: C2, border: "1px solid " + BD, borderRadius: 8, padding: "11px 12px", fontSize: 15, color: T1, marginTop: 4 }}>
+            {courses.map(c => <option key={c} value={c}>{c}{playCount[c] ? "  (" + playCount[c] + " rounds)" : ""}</option>)}
+          </select>
+        </div>
+
+        {HOLES.map(ch => {
+          const st = holeStats(ch.h);
+          const par = st.n ? st.par : ch.p;
+          const pm = st.n ? (st.avgScore - par) : null;
+          return (
+            <div key={ch.h} style={{ background: CARD, borderRadius: 12, border: "1px solid " + BD, marginBottom: 10, overflow: "hidden" }}>
+              <div style={{ background: ch.h <= 9 ? NAVY : "#1a3a5c", padding: "10px 14px", display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontFamily: "monospace", fontSize: 18, fontWeight: 800, color: WHT }}>{ch.h}</span>
+                <span style={{ fontSize: 12, color: "rgba(255,255,255,0.75)" }}>Par {par}</span>
+                {pm != null && <span style={{ marginLeft: "auto", fontFamily: "monospace", fontSize: 13, fontWeight: 700, color: pm <= 0.05 ? "#7ee0a0" : pm <= 0.4 ? "#ffd27a" : "#ff9a9a" }}>{pm >= 0 ? "+" : ""}{pm.toFixed(2)} avg</span>}
+              </div>
+              <div style={{ padding: "12px 14px" }}>
+                {/* THE PLAN (same store as entry) */}
+                <div style={lblS}>Plan (shows on entry)</div>
+                <textarea
+                  value={getHolePlan(course, ch.h)}
+                  onChange={e => setHolePlan(course, ch.h, e.target.value)}
+                  placeholder={"Tee: club + aim line\nAvoid: dead side / hazard\nApproach: pin plan, ideal miss"}
+                  rows={3}
+                  style={{ width: "100%", background: "#eef4ff", border: "1px solid " + BL, borderRadius: 8, padding: "9px 11px", fontSize: 14, color: T1, fontFamily: "inherit", resize: "vertical", lineHeight: 1.45, marginTop: 4 }} />
+                {/* ACCUMULATED KNOWLEDGE */}
+                {st.n ? (
+                  <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 8 }}>
+                    {[["Played", st.n + "x", T2],
+                      ["Fairway", st.firPct!=null ? st.firPct+"%" : "--", st.firPct!=null && st.firPct>=60?GN:st.firPct!=null?OR:T3],
+                      ["Greens", st.ghPct!=null ? st.ghPct+"%" : "--", st.ghPct!=null && st.ghPct>=60?GN:st.ghPct!=null?OR:T3],
+                      ["Avg prox", st.avgProx ? st.avgProx+"m" : "--", T2]].map(([l,v,c]) => (
+                      <div key={l} style={{ background: C2, borderRadius: 7, padding: "6px 10px", minWidth: 64 }}>
+                        <div style={{ fontSize: 9, color: T3, textTransform: "uppercase" }}>{l}</div>
+                        <div style={{ fontSize: 14, fontWeight: 700, color: c, fontFamily: "monospace" }}>{v}</div>
+                      </div>
+                    ))}
+                    {st.topMiss && (
+                      <div style={{ background: ORL, borderRadius: 7, padding: "6px 10px", flex: 1, minWidth: 120 }}>
+                        <div style={{ fontSize: 9, color: T3, textTransform: "uppercase" }}>Common miss</div>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: OR }}>Tends to miss {st.topMiss}</div>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{ marginTop: 8, fontSize: 11, color: T3, fontStyle: "italic" }}>No rounds logged on this hole yet -- the data builds as you play.</div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
   function EnterRound() {
     const h   = form.holes[holeIdx];
     const gi  = holeIdx;
@@ -770,7 +886,7 @@ export default function App() {
     // One-tap regulation par fill
     function fillRegPar() {
       const updates = {
-        score: par, putts: 2, gir: true, prox: 8, puttDist: 8,
+        score: par, putts: 2, gir: true, greenHit: true, prox: 8, puttDist: 8,
         decision: "good"
       };
       if (par >= 4) { updates.teeResult = "fairway"; updates.teeClub = par === 5 ? "Driver" : lastTeeClub; }
@@ -959,6 +1075,17 @@ export default function App() {
                   </button>
                 ))}
               </div>
+              <div style={{ ...lblStyle, marginTop: 12 }}>First Putt Break</div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {[["LtoR","L to R"],["RtoL","R to L"],["uphill","Uphill"],["downhill","Downhill"],["double","Double"]].map(([v,label]) => (
+                  <button key={v} onClick={() => sh(gi,"puttBreak", h.puttBreak === v ? null : v)}
+                    style={{ ...btnBase, flex: "1 1 30%", padding: "8px 0", fontSize: 12,
+                      background: h.puttBreak === v ? PU : C2, color: h.puttBreak === v ? WHT : T2,
+                      borderColor: h.puttBreak === v ? PU : BD }}>
+                    {label}
+                  </button>
+                ))}
+              </div>
             </div>
 
             {/* TEE RESULT - par 4/5 only */}
@@ -1018,11 +1145,11 @@ export default function App() {
               </div>
             </div>
 
-            {/* GIR */}
+            {/* GIR (auto, in-regulation) */}
             <div>
               <div style={lblStyle}>Green in Regulation {((h.score - h.putts) <= (par - 2)) === h.gir ? "(auto)" : ""}</div>
               <div style={{ display: "flex", gap: 6 }}>
-                {[["Y","Hit (Y)",GN],["N","Miss (N)",RD]].map(([v,label,c]) => {
+                {[["Y","In Reg (Y)",GN],["N","Not in Reg",RD]].map(([v,label,c]) => {
                   const isActive = (h.gir === true && v === "Y") || (h.gir === false && v === "N");
                   return (
                     <button key={v} onClick={() => sh(gi,"gir", v === "Y")}
@@ -1034,8 +1161,25 @@ export default function App() {
               </div>
             </div>
 
-            {/* Proximity if GIR */}
-            {h.gir === true && (
+            {/* Approach hit green (approach skill, decoupled from driving/regulation) */}
+            <div>
+              <div style={lblStyle}>Approach Hit Green? (any stroke)</div>
+              <div style={{ display: "flex", gap: 6 }}>
+                {[["Y","Hit Green",GN],["N","Missed",RD]].map(([v,label,c]) => {
+                  const gh = h.greenHit == null ? h.gir : h.greenHit;
+                  const isActive = (gh === true && v === "Y") || (gh === false && v === "N");
+                  return (
+                    <button key={v} onClick={() => sh(gi,"greenHit", v === "Y")}
+                      style={{ ...btnBase, background: isActive ? c : C2, color: isActive ? WHT : T2, borderColor: isActive ? c : BD }}>
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Proximity if approach found green */}
+            {(h.greenHit == null ? h.gir : h.greenHit) === true && (
               <div>
                 <div style={lblStyle}>Proximity to Pin (m)</div>
                 <input type="number" value={h.prox || ""} onChange={e => { const v = parseInt(e.target.value)||null; sh(gi,"prox",v); if(v) sh(gi,"puttDist",v); }}
@@ -1044,8 +1188,8 @@ export default function App() {
               </div>
             )}
 
-            {/* Miss + U&D if missed GIR */}
-            {h.gir === false && (
+            {/* Miss + U&D + chip/bunker proximity if approach missed green */}
+            {(h.greenHit == null ? h.gir : h.greenHit) === false && (
               <div>
                 <div style={lblStyle}>Miss Direction</div>
                 <Seg value={h.missDir} onChange={v => sh(gi,"missDir",v)} activeColor={OR}
@@ -1070,6 +1214,14 @@ export default function App() {
                       </button>
                     ]}
                   </div>
+                  {h.udType && (
+                    <div style={{ marginTop: 10 }}>
+                      <div style={lblStyle}>{h.udType === "bunker" ? "Bunker" : "Chip"} Proximity to Pin (m)</div>
+                      <input type="number" value={h.udProx || ""} onChange={e => { const v = parseInt(e.target.value)||null; sh(gi,"udProx",v); }}
+                        placeholder="how close it finished" inputMode="numeric"
+                        style={{ width: "100%", background: C2, border: "1px solid " + BD, borderRadius: 8, padding: "11px 12px", fontSize: 15, color: T1 }} />
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -1557,6 +1709,9 @@ export default function App() {
   function HoleAnalysis() {
     if (!rSG.length) return <div style={{ color: T3, padding: 40, textAlign: "center" }}>No rounds yet.</div>;
     const r20 = last(20);
+    const _hcCount = {};
+    r20.forEach(r => { if (r.course) _hcCount[r.course] = (_hcCount[r.course]||0)+1; });
+    const homeCourse = Object.keys(_hcCount).sort((a,b)=>_hcCount[b]-_hcCount[a])[0] || "";
 
     const holeData = HOLES.map(ch => {
       const hd = r20.map(r => r.holes && r.holes.find(h => h.hole === ch.h)).filter(Boolean);
@@ -1674,6 +1829,14 @@ export default function App() {
               <div style={{ fontSize: 10, color: T3 }}>avg vs par</div>
             </div>
           </div>
+
+          {/* Saved game plan (from entry / Game Plan tab) */}
+          {getHolePlan(homeCourse, h.hole) && (
+            <div style={{ background: "#eef4ff", border: "1px solid " + BL, borderRadius: 6, padding: "8px 10px", marginBottom: 10 }}>
+              <div style={{ fontSize: 9, fontWeight: 700, color: BL, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3 }}>Plan{homeCourse ? " - " + homeCourse : ""}</div>
+              <div style={{ fontSize: 12, color: T1, whiteSpace: "pre-wrap", lineHeight: 1.4 }}>{getHolePlan(homeCourse, h.hole)}</div>
+            </div>
+          )}
 
           {/* Key stats row */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 5, marginBottom: 12 }}>
@@ -2156,6 +2319,7 @@ export default function App() {
     const [showBag,       setShowBag]       = useState(false);
     const [selFirClub,    setSelFirClub]    = useState(null); // isolated tee club
     const [selGirClub,    setSelGirClub]    = useState(null); // isolated approach club
+    const [selMissClub,   setSelMissClub]   = useState(null); // expanded club for miss pattern
     if (!rSG.length) return <div style={{ color: T3, padding: 40, textAlign: "center" }}>No rounds yet. Log rounds to see club statistics.</div>;
     const allRounds = last(50);
     const allHoles  = allRounds.flatMap(r => r.holes || []);
@@ -2748,6 +2912,85 @@ export default function App() {
         })()}
 
 
+          {/* ===== APPROACH BY CLUB - GREENS HIT (approach skill) + MISS PATTERN ===== */}
+          {(() => {
+            const m = {};
+            allHoles.forEach(h => {
+              if (!h.approachClub) return;
+              if (!m[h.approachClub]) m[h.approachClub] = { att: 0, green: 0, L: 0, R: 0, Sh: 0, Lg: 0, proxArr: [] };
+              const c = m[h.approachClub];
+              c.att++;
+              const gh = h.greenHit == null ? h.gir : h.greenHit;
+              if (gh === true) { c.green++; if (h.prox > 0) c.proxArr.push(h.prox); }
+              else {
+                if (h.missDir === "L")  c.L++;
+                if (h.missDir === "R")  c.R++;
+                if (h.missDir === "S" || h.missDir === "Sh") c.Sh++;
+                if (h.missDir === "Lg") c.Lg++;
+              }
+            });
+            const order = BAG.map(c => c.name);
+            const clubs = Object.keys(m).sort((a,b) => order.indexOf(a) - order.indexOf(b));
+            return (
+              <div style={{ marginBottom: 24 }}>
+                <div style={{ fontSize: 15, fontWeight: 800, color: T1, marginBottom: 4 }}>Approach by Club -- Greens Hit & Miss Pattern</div>
+                <div style={{ color: T3, fontSize: 11, marginBottom: 12 }}>Greens hit measures approach skill on any stroke -- decoupled from driving. Tap a club to see where the misses go and what to work on.</div>
+                {clubs.length === 0 ? (
+                  <div style={{ color: T3, fontSize: 12, fontStyle: "italic" }}>No approach club data yet -- record the club and result on each approach.</div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {clubs.map(club => {
+                      const c = m[club];
+                      const pct = c.att ? Math.round(c.green / c.att * 100) : 0;
+                      const misses = c.L + c.R + c.Sh + c.Lg;
+                      const open = selMissClub === club;
+                      const avgProx = c.proxArr.length ? (c.proxArr.reduce((a,b)=>a+b,0)/c.proxArr.length).toFixed(1) : null;
+                      const missBars = [["Left",c.L,OR],["Right",c.R,BL],["Short",c.Sh,RD],["Long",c.Lg,PU]];
+                      const topMiss = [...missBars].filter(x=>x[1]>0).sort((a,b)=>b[1]-a[1])[0];
+                      return (
+                        <div key={club} style={{ border: "1px solid " + (open ? BL : BD), borderRadius: 10, overflow: "hidden" }}>
+                          <button onClick={() => setSelMissClub(open ? null : club)}
+                            style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "11px 12px", background: open ? BLL : CARD, border: "none", cursor: "pointer", textAlign: "left" }}>
+                            <span style={{ fontSize: 14, fontWeight: 700, color: T1, minWidth: 64 }}>{club}</span>
+                            <span style={{ fontFamily: "monospace", fontSize: 16, fontWeight: 800, color: pct >= 55 ? GN : pct >= 40 ? GL : RD, minWidth: 48 }}>{pct}%</span>
+                            <span style={{ fontSize: 11, color: T3 }}>greens ({c.green}/{c.att})</span>
+                            {topMiss && <span style={{ fontSize: 11, color: T2, marginLeft: "auto" }}>misses {topMiss[0].toLowerCase()}</span>}
+                            <span style={{ fontSize: 13, color: T3, marginLeft: topMiss ? 6 : "auto" }}>{open ? "-" : "+"}</span>
+                          </button>
+                          {open && (
+                            <div style={{ padding: "12px", background: C2, borderTop: "1px solid " + BD }}>
+                              {avgProx && <div style={{ fontSize: 12, color: T2, marginBottom: 10 }}>Avg proximity when hit: <b>{avgProx}m</b></div>}
+                              {misses === 0 ? (
+                                <div style={{ fontSize: 12, color: T3 }}>No recorded misses with this club.</div>
+                              ) : (
+                                <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+                                  {missBars.map(([label, n, col]) => (
+                                    <div key={label} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                      <span style={{ width: 48, fontSize: 12, color: T2 }}>{label}</span>
+                                      <div style={{ flex: 1, height: 14, background: CARD, borderRadius: 4, overflow: "hidden" }}>
+                                        <div style={{ width: (misses ? n/misses*100 : 0) + "%", height: "100%", background: col }} />
+                                      </div>
+                                      <span style={{ width: 56, fontSize: 11, color: T3, textAlign: "right" }}>{n} ({misses ? Math.round(n/misses*100) : 0}%)</span>
+                                    </div>
+                                  ))}
+                                  {topMiss && topMiss[1] / misses >= 0.5 && (
+                                    <div style={{ marginTop: 6, padding: "8px 10px", borderRadius: 7, background: CARD, fontSize: 11, color: T2 }}>
+                                      Work-on: {Math.round(topMiss[1]/misses*100)}% of your misses with the {club} go <b>{topMiss[0].toLowerCase()}</b>. A consistent one-way miss is a setup/face-angle pattern worth a lesson focus.
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
                   <div style={{ fontSize: 15, fontWeight: 800, color: T1, marginBottom: 4 }}>GIR by Distance Bucket (All Clubs)</div>
           <div style={{ color: T3, fontSize: 11, marginBottom: 12 }}>Overall green-hitting performance by distance. Shows most-used club in each band and dominant miss pattern.</div>
           {Object.keys(distBucketTotals).length === 0 ? (
@@ -2853,14 +3096,14 @@ export default function App() {
     }));
     const C = ({ k, c, ref1, n }) => (
       <ResponsiveContainer width="100%" height={140}>
-        <LineChart data={td} margin={{ top: 4, right: 8, left: -22, bottom: 0 }}>
-          <CartesianGrid stroke={BD} strokeDasharray="3 3" />
+        <BarChart data={td} margin={{ top: 4, right: 8, left: -22, bottom: 0 }}>
+          <CartesianGrid stroke={BD} strokeDasharray="3 3" vertical={false} />
           <XAxis dataKey="date" tick={{ fill: T3, fontSize: 9 }} tickLine={false} />
           <YAxis domain={["auto","auto"]} tick={{ fill: T3, fontSize: 9 }} tickLine={false} />
-          <Tooltip content={<TT />} />
+          <Tooltip content={<TT />} cursor={{ fill: "rgba(127,127,127,0.08)" }} />
           {ref1 && <ReferenceLine y={ref1} stroke={GL} strokeDasharray="4 4" />}
-          <Line dataKey={k} stroke={c} strokeWidth={2} dot={{ r: 2, fill: c }} name={n||k} connectNulls />
-        </LineChart>
+          <Bar dataKey={k} fill={c} name={n||k} radius={[3,3,0,0]} maxBarSize={26} />
+        </BarChart>
       </ResponsiveContainer>
     );
     const lagData = last(20).map(r => ({
@@ -2887,15 +3130,15 @@ export default function App() {
           <Box>
             <Lbl t="3-Putts and 1-Putts per Round" />
             <ResponsiveContainer width="100%" height={140}>
-              <LineChart data={lagData} margin={{ top: 4, right: 8, left: -22, bottom: 0 }}>
-                <CartesianGrid stroke={BD} strokeDasharray="3 3" />
+              <BarChart data={lagData} margin={{ top: 4, right: 8, left: -22, bottom: 0 }}>
+                <CartesianGrid stroke={BD} strokeDasharray="3 3" vertical={false} />
                 <XAxis dataKey="date" tick={{ fill: T3, fontSize: 9 }} tickLine={false} />
                 <YAxis tick={{ fill: T3, fontSize: 9 }} tickLine={false} />
-                <Tooltip content={<TT />} />
+                <Tooltip content={<TT />} cursor={{ fill: "rgba(127,127,127,0.08)" }} />
                 <ReferenceLine y={2} stroke={RD} strokeDasharray="4 4" />
-                <Line dataKey="threePutt" stroke={RD} strokeWidth={2} dot={{ r: 2 }} name="3-Putts" connectNulls />
-                <Line dataKey="onePutt" stroke={GN} strokeWidth={2} dot={{ r: 2 }} name="1-Putts" connectNulls />
-              </LineChart>
+                <Bar dataKey="onePutt" fill={GN} name="1-Putts" radius={[3,3,0,0]} maxBarSize={14} />
+                <Bar dataKey="threePutt" fill={RD} name="3-Putts" radius={[3,3,0,0]} maxBarSize={14} />
+              </BarChart>
             </ResponsiveContainer>
           </Box>
         </div>
@@ -3294,6 +3537,7 @@ export default function App() {
         {tab === "practice"  && <PracticeLog />}
         {tab === "insights" && <Insights />}
           {tab === "hist"     && HcpSetup()}
+          {tab === "gameplan" && GamePlan()}
       </div>
       <div style={{ borderTop: "1px solid " + BD, padding: "12px 24px", display: "flex", justifyContent: "space-between", fontSize: 10, color: T3, maxWidth: 1200, margin: "0 auto" }}>
         <span>StrokeLab | SG: Broadie (2014) | DataGolf / DECADE (Fawcett) | Blue R73 S141 | Black R75 S143</span>
