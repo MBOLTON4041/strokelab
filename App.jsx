@@ -1,6 +1,5 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis } from "recharts";
-
 const HOLES = [
   {h:1,p:4},{h:2,p:4},{h:3,p:3},{h:4,p:4},{h:5,p:4},
   {h:6,p:5},{h:7,p:5},{h:8,p:3},{h:9,p:4},
@@ -18,12 +17,10 @@ const SG_WINDOWS = [
   { n: 20, label: "Last 20"    },
   { n: 0,  label: "All"        },
 ];
-
 const TEES = {
   blue:  { label: "Blue",  rating: 73.0, slope: 141, scratch: 73 },
   black: { label: "Black", rating: 75.0, slope: 143, scratch: 75 },
 };
-
 // Matt's bag -- carry distances in METRES
 const BAG = [
   { name: "Driver",  loft:  9,   carry: 260, tee: true,  appr: false },
@@ -42,7 +39,6 @@ const BAG = [
   { name: "LW",      loft: 60,   carry:  70, tee: false, appr: true  },
   { name: "Putter",  loft:  3,   carry:   0, tee: false, appr: true  },
 ];
-
 function suggestClub(yards) {
   if (!yards || yards <= 0) return null;
   // find closest carry distance, bias toward going one longer (leave full shot)
@@ -54,11 +50,9 @@ function suggestClub(yards) {
   });
   return best;
 }
-
 const TEE_CLUBS  = BAG.map(c => c.name); // all clubs valid off tee (par 3s etc)
 const APPR_CLUBS = BAG.filter(c => c.appr).map(c => c.name);
 const HAZARD_OPTS = ["OB","Water","Lateral","Drop"];
-
 // Expected putts to hole out from distance in FEET -- SCRATCH golfer baseline
 const PUTT_EV = [[2,1.02],[3,1.12],[5,1.28],[7,1.42],[10,1.61],[15,1.76],[20,1.85],[25,1.91],[30,1.96],[40,2.04],[50,2.10],[75,2.20],[100,2.28]];
 function puttEV(ft) {
@@ -71,14 +65,12 @@ function puttEV(ft) {
   }
   return 2.2;
 }
-
 function calcSG(r) {
   const M2FT = 3.281;                                  // proximity/putt distances stored in METRES
   const gir = r.girsHit / 18;
   const miss = 18 - r.girsHit;
   const fw = r.fairwaysTotal > 0 ? r.fairwaysHit / r.fairwaysTotal : 0.62;
   const avgProxFt = (r.avgProxFt || 7) * M2FT;         // avgProxFt field is really metres; convert
-
   // SG PUTTING (vs SCRATCH baseline) -- prefer per-hole first-putt distances now captured every hole
   let sgPutt;
   const holes = r.holes || [];
@@ -92,7 +84,6 @@ function calcSG(r) {
     const expGir = puttEV(avgProxFt) * r.girsHit;      // unit-corrected fallback
     sgPutt = parseFloat((expGir + 1.85 * miss - (r.totalPutts || 32)).toFixed(2));
   }
-
   const sgOTT  = parseFloat(((fw - 0.62) * (r.fairwaysTotal || 14) * 0.30 + ((r.avgDrive || 238) - 238) / 9 * 0.09).toFixed(2));
   const proxAdj = r.girsHit > 0 ? ((30 - avgProxFt) / 10) * 0.035 * r.girsHit : 0;  // 30 ft scratch prox; secondary refinement (GIR leads)
   const sgApp  = parseFloat(((gir - 0.59) * 18 * 0.40 + proxAdj).toFixed(2));   // 0.59 = scratch GIR
@@ -102,7 +93,6 @@ function calcSG(r) {
   const sgATG = parseFloat((att > 0 ? (sc - 0.50) * att * 0.32 + sandG : 0).toFixed(2));   // 0.50 = scratch scramble
   return { sgPutt, sgOTT, sgApp, sgATG, sgTotal: parseFloat((sgPutt + sgOTT + sgApp + sgATG).toFixed(2)) };
 }
-
 function roundDiff(r) {
   if (r.diff != null && !isNaN(r.diff)) return parseFloat(r.diff);          // seeded/history differential
   if (r.score == null) return null;
@@ -131,7 +121,6 @@ function fmtHcp(v) {
   if (v < 0) return "+" + Math.abs(v).toFixed(1);
   return v.toFixed(1);
 }
-
 function emptyHoles() {
   return HOLES.map(h => ({
     hole: h.h, par: h.p, score: h.p, putts: 2,
@@ -152,7 +141,6 @@ function emptyHoles() {
     notes: ""
   }));
 }
-
 function emptyRound() {
   return {
     date: new Date().toISOString().split("T")[0],
@@ -161,7 +149,6 @@ function emptyRound() {
     holes: emptyHoles()
   };
 }
-
 function aggHoles(holes) {
   const firHoles = holes.filter(h => h.par >= 4);
   const girHoles = holes.filter(h => h.gir);
@@ -203,14 +190,10 @@ function aggHoles(holes) {
     badDecisions:  holes.filter(h => h.decision === "bad").length,
   };
 }
-
-
-
 function ravg(arr, k) {
   if (!arr.length) return null;
   return parseFloat((arr.reduce((s, r) => s + (parseFloat(r[k]) || 0), 0) / arr.length).toFixed(1));
 }
-
 // -- LIGHT THEME --
 const BG   = "#f2f5f9";
 const CARD = "#ffffff";
@@ -226,7 +209,6 @@ const BL   = "#1a5fb4"; const BLL = "#e8f0fc";
 const TL   = "#0e8a7a"; const TLL = "#e6f7f5";
 const OR   = "#b85a15"; const ORL = "#fdeedd";
 const PU   = "#6e3aa8"; const PUL = "#f3eeff";
-
 function sgColor(v) {
   const n = parseFloat(v);
   if (isNaN(n)) return T3;
@@ -236,7 +218,6 @@ function pmColor(pm) {
   if (pm <= -2) return BL; if (pm <= -1) return GN;
   if (pm === 0) return T1; if (pm === 1) return GL; return RD;
 }
-
 const Box = ({ children, style }) => (
   <div style={{ background: CARD, border: "1px solid " + BD, borderRadius: 10, padding: 16, boxShadow: "0 1px 4px rgba(0,0,0,0.06)", ...style }}>
     {children}
@@ -291,9 +272,7 @@ function Btn({ label, active, onClick, ac, small }) {
     </button>
   );
 }
-
 const TABS = [["dash","Dashboard"],["enter","+ Log Round"],["sg","Strokes Gained"],["holes","Hole Analysis"],["gameplan","Game Plan"],["clubs","Club Stats"],["putting","Putting"],["scoring","Scoring"],["trend","Trends"],["practice","Practice Log"],["insights","Insights"],["hist","Hcp Setup"]];
-
 export default function App() {
   const [rounds,  setRounds]  = useState(() => {
     try { const s = localStorage.getItem("strokelab_rounds"); return s ? JSON.parse(s) : []; } catch (e) { return []; }
@@ -318,7 +297,6 @@ export default function App() {
   const [practiceLogs, setPracticeLogs] = useState(() => {
     try { const s = localStorage.getItem("strokelab_practice"); return s ? JSON.parse(s) : []; } catch (e) { return []; }
   });
-
   // Persist to localStorage whenever data changes
   const _hydRounds = useRef(false);
   useEffect(() => {
@@ -330,7 +308,6 @@ export default function App() {
     if (!_hydPractice.current) { _hydPractice.current = true; return; }
     try { localStorage.setItem("strokelab_practice", JSON.stringify(practiceLogs)); } catch (e) {}
   }, [practiceLogs]);
-
   // Persistent per-course hole game-plans: { [courseName]: { [holeNumber]: planText } }
   const [coursePlans, setCoursePlans] = useState(() => {
     try { const s = localStorage.getItem("strokelab_courseplans"); return s ? JSON.parse(s) : {}; } catch (e) { return {}; }
@@ -344,7 +321,6 @@ export default function App() {
   useEffect(() => {
     try { localStorage.setItem("strokelab_draft", JSON.stringify({ form, holeIdx })); } catch (e) {}
   }, [form, holeIdx]);
-
   // Seeded handicap history (date + course + GA differential), feeds handicap only
   const [hcpHistory, setHcpHistory] = useState(() => {
     try { const s = localStorage.getItem("strokelab_hcphistory"); return s ? JSON.parse(s) : []; } catch (e) { return []; }
@@ -366,7 +342,6 @@ export default function App() {
   };
   const [practiceForm, setPracticeForm] = useState({ date: new Date().toISOString().split("T")[0], area: "Putting", drill: "", duration: 30, notes: "", made: null, att: null });
   const [roundTargets] = useState({ girMin: 11, puttsMax: 30, firMin: 8, hazMax: 1 });
-
   const clearAllData = () => {
     if (window.confirm("Delete ALL rounds and practice logs? This cannot be undone.")) {
       setRounds([]);
@@ -377,11 +352,9 @@ export default function App() {
     }
   };
   const fileRef = useRef();
-
   const rSG  = useMemo(() => rounds.map(r => ({ ...r, ...calcSG(r) })), [rounds]);
   const hcp  = useMemo(() => hcpFromSeries(buildDiffSeries(rounds, hcpHistory)), [rounds, hcpHistory]);
   const last = n => rSG.slice(-Math.min(n, rSG.length));
-
   const s10 = useMemo(() => {
     const r = last(10);
     if (!r.length) return null;
@@ -397,10 +370,8 @@ export default function App() {
       threePutts: ravg(r,"threePutts"), onePutts: ravg(r,"onePutts"),
     };
   }, [rSG]);
-
   const sh = (i, k, v) => setForm(f => { const holes = [...f.holes]; holes[i] = { ...holes[i], [k]: v }; return { ...f, holes }; });
   const teeInfo = TEES[form.tee] || TEES.blue;
-
   function saveRound() {
     const agg = aggHoles(form.holes);
     const ti  = TEES[form.tee] || TEES.blue;
@@ -410,7 +381,6 @@ export default function App() {
     setSaved(true); setTimeout(() => setSaved(false), 2500);
     setTab("dash");
   }
-
   function doExport() {
     const backup = {
       _type: "strokelab_backup", _version: 2, _exported: new Date().toISOString(),
@@ -446,13 +416,11 @@ export default function App() {
     };
     fr.readAsText(f); e.target.value = "";
   }
-
   const fAgg       = useMemo(() => aggHoles(form.holes), [form.holes]);
   const frontScore = form.holes.slice(0,9).reduce((s,h) => s + (h.score||h.par), 0);
   const backScore  = form.holes.slice(9).reduce((s,h)  => s + (h.score||h.par), 0);
   const totalScore = frontScore + backScore;
   const totalPM    = totalScore - TOTAL_PAR;
-
   // -- DASHBOARD --
   function Dash() {
     if (!rSG.length) return (
@@ -524,7 +492,6 @@ export default function App() {
             </Box>
           );
         })()}
-
         <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 14 }}>
           <Box>
             <Lbl t="Score Trend (last 10 rounds)" />
@@ -650,7 +617,6 @@ export default function App() {
       </div>
     );
   }
-
   // -- LOG ROUND --
   function HcpSetup() {
     const series = buildDiffSeries(rounds, hcpHistory);
@@ -660,7 +626,6 @@ export default function App() {
     const NAVY = "#18213a", WHT = "#ffffff";
     const lbl = { fontSize: 11, fontWeight: 700, color: T3, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 };
     const inp = { background: C2, border: "1px solid " + BD, borderRadius: 8, padding: "11px 12px", fontSize: 15, color: T1, fontFamily: "inherit", width: "100%" };
-
     function addRow() {
       const d = parseFloat(histDraft.diff);
       if (isNaN(d) || !histDraft.date) return;
@@ -668,7 +633,6 @@ export default function App() {
       setHistDraft(h => ({ ...h, course: "", diff: "" }));
     }
     function delRow(id) { setHcpHistory(prev => prev.filter(r => r.id !== id)); }
-
     return (
       <div style={{ maxWidth: 480, margin: "0 auto", padding: "0 0 80px" }}>
         <div style={{ background: CARD, borderRadius: 12, padding: "16px", border: "1px solid " + BD, marginBottom: 12 }}>
@@ -691,7 +655,6 @@ export default function App() {
             </div>
           </div>
         </div>
-
         <div style={{ background: CARD, borderRadius: 12, padding: "16px", border: "1px solid " + BD, marginBottom: 12 }}>
           <div style={lbl}>Add a Past Round</div>
           <div style={{ display: "grid", gridTemplateColumns: "1.1fr 1.3fr 0.8fr", gap: 8, marginBottom: 10 }}>
@@ -712,7 +675,6 @@ export default function App() {
             Add Round
           </button>
         </div>
-
         <div style={{ background: CARD, borderRadius: 12, padding: "16px", border: "1px solid " + BD }}>
           <div style={lbl}>Seeded Rounds ({hcpHistory.length})</div>
           {!hcpHistory.length && <div style={{ fontSize: 13, color: T3, marginTop: 6 }}>None yet. Add your last ~20 rounds above so your handicap starts from the right place.</div>}
@@ -732,7 +694,6 @@ export default function App() {
       </div>
     );
   }
-
   function GamePlan() {
     const NAVY = "#18213a", WHT = "#ffffff";
     // Courses that have either rounds or saved plans
@@ -745,7 +706,6 @@ export default function App() {
     rounds.forEach(r => { if (r.course) playCount[r.course] = (playCount[r.course]||0)+1; });
     const defCourse = courses.sort((a,b) => (playCount[b]||0)-(playCount[a]||0))[0] || "";
     const course = gpCourse || defCourse;
-
     if (!courses.length) {
       return (
         <div style={{ maxWidth: 480, margin: "0 auto", padding: "40px 16px", textAlign: "center", color: T3 }}>
@@ -754,10 +714,8 @@ export default function App() {
         </div>
       );
     }
-
     const courseRounds = rounds.filter(r => r.course === course);
     const lblS = { fontSize: 11, fontWeight: 700, color: T3, textTransform: "uppercase", letterSpacing: "0.06em" };
-
     // Per-hole accumulated knowledge for this course
     const holeStats = (holeNum) => {
       const hs = courseRounds.map(r => (r.holes||[]).find(h => h.hole === holeNum)).filter(Boolean);
@@ -780,7 +738,6 @@ export default function App() {
       const missLabel = { L:"left", R:"right", S:"short", Lg:"long" };
       return { n: hs.length, par, avgScore, firPct, ghPct, topMiss: topMiss?missLabel[topMiss[0]]:null, avgProx };
     };
-
     return (
       <div style={{ maxWidth: 560, margin: "0 auto", padding: "0 0 90px" }}>
         <div style={{ background: CARD, borderRadius: 12, padding: "14px 16px", border: "1px solid " + BD, marginBottom: 12 }}>
@@ -794,7 +751,6 @@ export default function App() {
             {courses.map(c => <option key={c} value={c}>{c}{playCount[c] ? "  (" + playCount[c] + " rounds)" : ""}</option>)}
           </select>
         </div>
-
         {HOLES.map(ch => {
           const st = holeStats(ch.h);
           const par = st.n ? st.par : ch.p;
@@ -844,12 +800,10 @@ export default function App() {
       </div>
     );
   }
-
   function EnterRound() {
     const h   = form.holes[holeIdx];
     const gi  = holeIdx;
     const par = h.par;
-
     function sLabel(score, par) {
       const d = score - par;
       if (d <= -2) return { tc: BL,  lbl: "Eagle" };
@@ -860,7 +814,6 @@ export default function App() {
       return               { tc: RD,  lbl: "Triple+" };
     }
     const sl = sLabel(h.score, par);
-
     const runScore = form.holes.reduce((s, x) => s + (x.score || 0), 0);
     const runPar   = form.holes.reduce((s, x) => s + x.par, 0);
     const runPM    = runScore - runPar;
@@ -868,7 +821,6 @@ export default function App() {
     const backScore  = form.holes.slice(9).reduce((s,x) => s+(x.score||0),0);
     const frontPM    = frontScore - FRONT_PAR;
     const backPM     = backScore - BACK_PAR;
-
     function dotColor(i) {
       const hh = form.holes[i];
       const d = (hh.score||hh.par) - hh.par;
@@ -878,12 +830,10 @@ export default function App() {
       if (d === 2) return OR;
       return RD;
     }
-
     // Auto-derive GIR from score - putts <= par - 2
     function autoGIR(hole) {
       return (hole.score - hole.putts) <= (hole.par - 2);
     }
-
     // One-tap regulation par fill
     function fillRegPar() {
       const updates = {
@@ -897,18 +847,15 @@ export default function App() {
         return { ...f, holes };
       });
     }
-
     const NAVY  = "#18213a";
     const NAVY2 = "#1a3a5c";
     const WHT   = "#ffffff";
-
     const btnBase = {
       border: "1px solid " + BD, borderRadius: 8, padding: "10px 0",
       fontSize: 14, fontWeight: 600, cursor: "pointer", flex: 1,
       fontFamily: "inherit", transition: "all 0.12s"
     };
     const lblStyle = { fontSize: 11, fontWeight: 700, color: T3, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 };
-
     function Stepper({ val, min, max, onChange, color }) {
       return (
         <div style={{ display: "flex", alignItems: "center", background: C2, borderRadius: 12, overflow: "hidden", border: "1px solid " + BD }}>
@@ -920,7 +867,6 @@ export default function App() {
         </div>
       );
     }
-
     function Seg({ value, opts, onChange, activeColor }) {
       return (
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -939,7 +885,6 @@ export default function App() {
         </div>
       );
     }
-
     const CLUB_OPTS = ["Driver","Mini","4 Wood","Hybrid","2 Iron","4 Iron","5 Iron","6 Iron","7 Iron","8 Iron","9 Iron","PW","SW","LW"];
 
     return (
@@ -2325,7 +2270,6 @@ export default function App() {
     );
   }
 
-
   // -- CLUB STATS --
   function ClubStats() {
     const [showBag,       setShowBag]       = useState(false);
@@ -2965,7 +2909,6 @@ export default function App() {
             </Box>
           );
         })()}
-
 
           {/* ===== APPROACH DISTANCE-CONTROL BIAS (short vs long) ===== */}
           {(() => {
