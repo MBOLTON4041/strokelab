@@ -94,7 +94,7 @@ function calcSG(r) {
   }
 
   const sgOTT  = parseFloat(((fw - 0.62) * (r.fairwaysTotal || 14) * 0.30 + ((r.avgDrive || 238) - 238) / 9 * 0.09).toFixed(2));
-  const proxAdj = r.girsHit > 0 ? ((30 - avgProxFt) / 10) * 0.08 * r.girsHit : 0;  // 30 ft = scratch proximity on greens hit; secondary refinement
+  const proxAdj = r.girsHit > 0 ? ((30 - avgProxFt) / 10) * 0.035 * r.girsHit : 0;  // 30 ft scratch prox; secondary refinement (GIR leads)
   const sgApp  = parseFloat(((gir - 0.59) * 18 * 0.40 + proxAdj).toFixed(2));   // 0.59 = scratch GIR
   const att = r.udAttempts || 0;
   const sc  = att > 0 ? r.udMade / att : 0.50;
@@ -310,10 +310,14 @@ export default function App() {
   });
 
   // Persist to localStorage whenever data changes
+  const _hydRounds = useRef(false);
   useEffect(() => {
+    if (!_hydRounds.current) { _hydRounds.current = true; return; }   // never overwrite on mount
     try { localStorage.setItem("strokelab_rounds", JSON.stringify(rounds)); } catch (e) {}
   }, [rounds]);
+  const _hydPractice = useRef(false);
   useEffect(() => {
+    if (!_hydPractice.current) { _hydPractice.current = true; return; }
     try { localStorage.setItem("strokelab_practice", JSON.stringify(practiceLogs)); } catch (e) {}
   }, [practiceLogs]);
 
@@ -321,7 +325,9 @@ export default function App() {
   const [coursePlans, setCoursePlans] = useState(() => {
     try { const s = localStorage.getItem("strokelab_courseplans"); return s ? JSON.parse(s) : {}; } catch (e) { return {}; }
   });
+  const _hydPlans = useRef(false);
   useEffect(() => {
+    if (!_hydPlans.current) { _hydPlans.current = true; return; }
     try { localStorage.setItem("strokelab_courseplans", JSON.stringify(coursePlans)); } catch (e) {}
   }, [coursePlans]);
   // Auto-save the in-progress round so a mid-round reload never loses data
@@ -333,7 +339,9 @@ export default function App() {
   const [hcpHistory, setHcpHistory] = useState(() => {
     try { const s = localStorage.getItem("strokelab_hcphistory"); return s ? JSON.parse(s) : []; } catch (e) { return []; }
   });
+  const _hydHist = useRef(false);
   useEffect(() => {
+    if (!_hydHist.current) { _hydHist.current = true; return; }
     try { localStorage.setItem("strokelab_hcphistory", JSON.stringify(hcpHistory)); } catch (e) {}
   }, [hcpHistory]);
   const [histDraft, setHistDraft] = useState({ date: new Date().toISOString().split("T")[0], course: "", diff: "" });
@@ -393,13 +401,38 @@ export default function App() {
   }
 
   function doExport() {
-    const b = new Blob([JSON.stringify(rounds, null, 2)], { type: "application/json" });
-    Object.assign(document.createElement("a"), { href: URL.createObjectURL(b), download: "strokelab.json" }).click();
+    const backup = {
+      _type: "strokelab_backup", _version: 2, _exported: new Date().toISOString(),
+      rounds, practiceLogs, coursePlans, hcpHistory
+    };
+    const b = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+    const stamp = new Date().toISOString().slice(0,10);
+    Object.assign(document.createElement("a"), { href: URL.createObjectURL(b), download: "strokelab-backup-" + stamp + ".json" }).click();
   }
   function doImport(e) {
     const f = e.target.files[0]; if (!f) return;
     const fr = new FileReader();
-    fr.onload = ev => { try { setRounds(JSON.parse(ev.target.result)); } catch(err) {} };
+    fr.onload = ev => {
+      try {
+        const data = JSON.parse(ev.target.result);
+        if (Array.isArray(data)) {                       // legacy export = bare rounds array
+          if (window.confirm("Import " + data.length + " rounds? This replaces current rounds.")) setRounds(data);
+          return;
+        }
+        if (data && data._type === "strokelab_backup") {  // full backup
+          const msg = "Restore backup from " + (data._exported || "").slice(0,10) + "?\n" +
+            (data.rounds ? data.rounds.length : 0) + " rounds, " +
+            (data.hcpHistory ? data.hcpHistory.length : 0) + " seeded differentials. This replaces current data.";
+          if (!window.confirm(msg)) return;
+          if (Array.isArray(data.rounds))       setRounds(data.rounds);
+          if (Array.isArray(data.practiceLogs))  setPracticeLogs(data.practiceLogs);
+          if (data.coursePlans && typeof data.coursePlans === "object") setCoursePlans(data.coursePlans);
+          if (Array.isArray(data.hcpHistory))    setHcpHistory(data.hcpHistory);
+          return;
+        }
+        window.alert("File not recognised as a StrokeLab backup.");
+      } catch(err) { window.alert("Could not read that file."); }
+    };
     fr.readAsText(f); e.target.value = "";
   }
 
@@ -440,68 +473,43 @@ export default function App() {
           <KPI label="Putts/Rd (10r)" value={s10 && s10.putts} target="28.0" color={s10 && s10.putts <= 28 ? GN : s10 && s10.putts <= 30 ? GL : RD} />
           <KPI label="Hazards/Rd (10r)" value={s10 && s10.hazards} target="0-1" color={s10 && s10.hazards <= 1 ? GN : s10 && s10.hazards <= 2 ? GL : RD} />
         </div>
-        {/* HANDICAP TRAJECTORY */}
-        {(buildDiffSeries(rounds, hcpHistory).length >= 3) && (() => {
-          // Rolling handicap across the unified (history + logged) differential series
+        {/* HANDICAP - BEST 8 OF 20 */}
+        {(buildDiffSeries(rounds, hcpHistory).length >= 1) && (() => {
           const series = buildDiffSeries(rounds, hcpHistory);
-          const hcpSeries = series.map((_, i) => {
-            const h = hcpFromSeries(series.slice(0, i + 1));
-            return { date: (series[i].date || "").slice(5), hcp: h, score: series[i].score };
-          }).filter(d => d.hcp !== null);
-          // Simple linear trend on last 5 points
-          const recent = hcpSeries.slice(-5);
-          let projected = null;
-          if (recent.length >= 3) {
-            const xs = recent.map((_, i) => i);
-            const ys = recent.map(d => d.hcp);
-            const n = xs.length;
-            const xm = xs.reduce((a,b)=>a+b,0)/n;
-            const ym = ys.reduce((a,b)=>a+b,0)/n;
-            const slope = xs.reduce((s,x,i)=>s+(x-xm)*(ys[i]-ym),0) / xs.reduce((s,x)=>s+(x-xm)**2,0);
-            const inter = ym - slope*xm;
-            const curr = hcpSeries[hcpSeries.length-1].hcp;
-            const stepsToP2 = slope < 0 ? Math.ceil(((-2) - inter) / slope) : null;
-            projected = { slope: parseFloat(slope.toFixed(3)), stepsToP2, curr };
-          }
+          const last20 = series.slice(-20);
+          const n = last20.length;
+          const take = n < 6 ? 1 : n < 9 ? 2 : n < 12 ? 3 : n < 15 ? 4 : n < 17 ? 5 : n < 19 ? 6 : n === 19 ? 7 : 8;
+          // best `take` differentials (the counting scores)
+          const ranked = last20.map((d, i) => ({ ...d, i })).sort((a, b) => a.diff - b.diff);
+          const counting = ranked.slice(0, take);
           return (
             <Box style={{ padding: "14px 16px" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
                 <div>
-                  <Lbl t="Handicap Trajectory" />
-                  {projected && projected.slope < 0 && projected.stepsToP2 && projected.stepsToP2 > 0 && projected.stepsToP2 <= 40 && (
-                    <div style={{ fontSize: 11, color: GN, fontWeight: 700, marginTop: 2 }}>
-                      At current trend: +2 in ~{projected.stepsToP2} more round{projected.stepsToP2 !== 1 ? "s" : ""}
-                    </div>
-                  )}
-                  {projected && projected.slope >= 0 && (
-                    <div style={{ fontSize: 11, color: RD, fontWeight: 600, marginTop: 2 }}>Trend moving away from target -- review last 5 rounds</div>
-                  )}
+                  <Lbl t="Handicap Index" />
+                  <div style={{ fontSize: 11, color: T3, marginTop: 2 }}>Best {take} of last {n} differentials</div>
                 </div>
                 <div style={{ textAlign: "right" }}>
-                  <div style={{ fontFamily: "monospace", fontSize: 22, fontWeight: 800, color: hcpColor }}>
+                  <div style={{ fontFamily: "monospace", fontSize: 26, fontWeight: 800, color: hcpColor }}>
                     {hcp != null ? (hcp > 0 ? "+" + hcp : String(hcp)) : "--"}
                   </div>
-                  <div style={{ fontSize: 10, color: T3 }}>Current HCP</div>
+                  <div style={{ fontSize: 10, color: T3 }}>Current Index</div>
                 </div>
               </div>
-              <ResponsiveContainer width="100%" height={120}>
-                <LineChart data={hcpSeries} margin={{ top: 4, right: 8, left: -22, bottom: 0 }}>
-                  <CartesianGrid stroke={BD} strokeDasharray="3 3" />
-                  <XAxis dataKey="date" tick={{ fill: T3, fontSize: 9 }} tickLine={false} />
-                  <YAxis domain={["auto","auto"]} tick={{ fill: T3, fontSize: 9 }} tickLine={false} tickFormatter={v => v > 0 ? "+"+v : v} />
-                  <Tooltip content={({ active, payload, label }) => {
-                    if (!active || !payload || !payload.length) return null;
-                    const v = payload[0].value;
-                    return <div style={{ background: CARD, border: "1px solid " + BD, borderRadius: 6, padding: "6px 10px", fontSize: 11 }}>
-                      <div style={{ color: T2 }}>{label}</div>
-                      <div style={{ fontFamily: "monospace", fontWeight: 800, color: v <= -2 ? BL : v <= 0 ? GN : GL }}>HCP: {v > 0 ? "+" : ""}{v}</div>
-                    </div>;
-                  }} />
-                  <ReferenceLine y={-2} stroke={BL} strokeDasharray="5 4" label={{ value: "+2", fill: BL, fontSize: 9, position: "insideTopRight" }} />
-                  <ReferenceLine y={0} stroke={T3} strokeDasharray="3 3" />
-                  <Line dataKey="hcp" stroke={GN} strokeWidth={2.5} dot={{ r: 3, fill: GN, stroke: "#fff", strokeWidth: 1 }} name="Handicap" connectNulls />
-                </LineChart>
-              </ResponsiveContainer>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 7 }}>
+                {counting.map((d, k) => (
+                  <div key={k} style={{ display: "flex", alignItems: "center", gap: 8, background: GNL, border: "1px solid " + GN, borderRadius: 8, padding: "8px 10px" }}>
+                    <span style={{ fontFamily: "monospace", fontSize: 17, fontWeight: 800, color: GN, minWidth: 38 }}>{d.diff.toFixed(1)}</span>
+                    <div style={{ display: "flex", flexDirection: "column", lineHeight: 1.2, overflow: "hidden" }}>
+                      <span style={{ fontSize: 11, color: T2, whiteSpace: "nowrap" }}>{(d.date || "").slice(2)}</span>
+                      {d.course && <span style={{ fontSize: 10, color: T3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{d.course}</span>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div style={{ fontSize: 10, color: T3, marginTop: 9, fontStyle: "italic" }}>
+                These {take} count toward your index. Beat your highest counter to drop it. {n < 20 ? `${20 - n} more rounds fills the 20-round window.` : ""}
+              </div>
             </Box>
           );
         })()}
