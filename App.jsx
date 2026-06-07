@@ -147,6 +147,7 @@ function emptyHoles() {
     hazard: false, hazardType: null,
     puttDist: null,                              // first putt distance in metres (every hole)
     puttBreak: null,                             // "LtoR"|"RtoL"|"uphill"|"downhill"|"double"
+    puttMiss: null,                              // first-putt miss: "short"|"long"|"left"|"right"|"made"
     decision: null,                              // "good" | "bad" process flag
     notes: ""
   }));
@@ -155,7 +156,7 @@ function emptyHoles() {
 function emptyRound() {
   return {
     date: new Date().toISOString().split("T")[0],
-    course: "", tee: "blue", notes: "", avgDrive: 247,
+    course: "Huntingdale GC", tee: "blue", notes: "", avgDrive: 247,
     wind: null, conditions: null, timeOfDay: null,
     holes: emptyHoles()
   };
@@ -291,7 +292,7 @@ function Btn({ label, active, onClick, ac, small }) {
   );
 }
 
-const TABS = [["dash","Dashboard"],["enter","+ Log Round"],["sg","Strokes Gained"],["holes","Hole Analysis"],["gameplan","Game Plan"],["clubs","Club Stats"],["trend","Trends"],["practice","Practice Log"],["insights","Insights"],["hist","Hcp Setup"]];
+const TABS = [["dash","Dashboard"],["enter","+ Log Round"],["sg","Strokes Gained"],["holes","Hole Analysis"],["gameplan","Game Plan"],["clubs","Club Stats"],["putting","Putting"],["scoring","Scoring"],["trend","Trends"],["practice","Practice Log"],["insights","Insights"],["hist","Hcp Setup"]];
 
 export default function App() {
   const [rounds,  setRounds]  = useState(() => {
@@ -355,12 +356,12 @@ export default function App() {
   }, [hcpHistory]);
   const [histDraft, setHistDraft] = useState({ date: new Date().toISOString().split("T")[0], course: "", diff: "" });
   const [gpCourse, setGpCourse] = useState("");
-  const getHolePlan = (course, holeNum) => (coursePlans[course] && coursePlans[course][holeNum]) || "";
+  const getHolePlan = (course, holeNum) => { const k = course || "Unspecified course"; return (coursePlans[k] && coursePlans[k][holeNum]) || ""; };
   const setHolePlan = (course, holeNum, text) => {
-    if (!course) return;
+    const k = course || "Unspecified course";
     setCoursePlans(prev => ({
       ...prev,
-      [course]: { ...(prev[course] || {}), [holeNum]: text }
+      [k]: { ...(prev[k] || {}), [holeNum]: text }
     }));
   };
   const [practiceForm, setPracticeForm] = useState({ date: new Date().toISOString().split("T")[0], area: "Putting", drill: "", duration: 30, notes: "", made: null, att: null });
@@ -1082,6 +1083,17 @@ export default function App() {
                     style={{ ...btnBase, flex: "1 1 30%", padding: "8px 0", fontSize: 12,
                       background: h.puttBreak === v ? PU : C2, color: h.puttBreak === v ? WHT : T2,
                       borderColor: h.puttBreak === v ? PU : BD }}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <div style={{ ...lblStyle, marginTop: 12 }}>First Putt Result (line/pace diagnostic)</div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {[["made","Holed",GN],["short","Short",RD],["long","Long",OR],["left","Left",BL],["right","Right",TL]].map(([v,label,c]) => (
+                  <button key={v} onClick={() => sh(gi,"puttMiss", h.puttMiss === v ? null : v)}
+                    style={{ ...btnBase, flex: "1 1 18%", padding: "8px 0", fontSize: 12,
+                      background: h.puttMiss === v ? c : C2, color: h.puttMiss === v ? WHT : T2,
+                      borderColor: h.puttMiss === v ? c : BD }}>
                     {label}
                   </button>
                 ))}
@@ -2706,6 +2718,49 @@ export default function App() {
           )}
         </Box>
 
+        {/* ===== TEE-CLUB DECISION ANALYSIS (DECADE) ===== */}
+        {(() => {
+          const m = {};
+          allHoles.forEach(h => {
+            if (h.par < 4 || !h.teeClub) return;
+            if (!m[h.teeClub]) m[h.teeClub] = { n: 0, over: 0, fw: 0, fwTot: 0, pen: 0 };
+            const c = m[h.teeClub];
+            c.n++;
+            c.over += (h.score || h.par) - h.par;
+            const hit = h.teeResult ? h.teeResult === "fairway" : h.fir === true;
+            if (h.teeResult != null || h.fir != null) { c.fwTot++; if (hit) c.fw++; }
+            if (h.hazard || h.teeResult === "penalty") c.pen++;
+          });
+          const order = BAG.map(c => c.name);
+          const clubs = Object.keys(m).filter(k => m[k].n >= 2).sort((a,b) => order.indexOf(a) - order.indexOf(b));
+          if (!clubs.length) return null;
+          return (
+            <Box>
+              <div style={{ fontSize: 15, fontWeight: 800, color: T1, marginBottom: 4 }}>Tee-Club Decision Analysis</div>
+              <div style={{ color: T3, fontSize: 11, marginBottom: 12 }}>Scoring outcome and penalty rate by club off the tee on par 4s/5s. The aggressive line only wins if the penalty cost stays low -- this prices it for you.</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {clubs.map(club => {
+                  const c = m[club];
+                  const avgVs = c.over / c.n;
+                  const penRate = Math.round(c.pen / c.n * 100);
+                  const fwPct = c.fwTot ? Math.round(c.fw / c.fwTot * 100) : null;
+                  return (
+                    <div key={club} style={{ display: "flex", alignItems: "center", gap: 8, background: C2, borderRadius: 8, padding: "10px 12px" }}>
+                      <span style={{ width: 70, fontSize: 13, fontWeight: 700, color: T1 }}>{club}</span>
+                      <div style={{ flex: 1, display: "flex", gap: 12 }}>
+                        <span style={{ fontSize: 11, color: T2 }}>vs par <b style={{ color: avgVs <= 0.25 ? GN : avgVs <= 0.5 ? GL : RD, fontFamily: "monospace" }}>{avgVs >= 0 ? "+" : ""}{avgVs.toFixed(2)}</b></span>
+                        {fwPct != null && <span style={{ fontSize: 11, color: T2 }}>FW <b style={{ color: fwPct >= 60 ? GN : GL }}>{fwPct}%</b></span>}
+                        <span style={{ fontSize: 11, color: T2 }}>penalty <b style={{ color: penRate <= 5 ? GN : penRate <= 12 ? OR : RD }}>{penRate}%</b></span>
+                      </div>
+                      <span style={{ fontSize: 10, color: T3 }}>{c.n}x</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </Box>
+          );
+        })()}
+
         <Box>
           <div style={{ fontSize: 15, fontWeight: 800, color: T1, marginBottom: 4 }}>Fairways Hit by Tee Club</div>
           <div style={{ color: T3, fontSize: 11, marginBottom: 12 }}>All rounds tracked. Miss direction shows where the ball goes when you miss the fairway.</div>
@@ -2912,6 +2967,43 @@ export default function App() {
         })()}
 
 
+          {/* ===== APPROACH DISTANCE-CONTROL BIAS (short vs long) ===== */}
+          {(() => {
+            const miss = allHoles.filter(h => h.approachClub && (h.greenHit == null ? h.gir : h.greenHit) === false && h.missDir);
+            const c = { S:0, Lg:0, L:0, R:0 };
+            miss.forEach(h => { const k = h.missDir === "Sh" ? "S" : h.missDir; if (c[k]!=null) c[k]++; });
+            const tot = c.S + c.Lg + c.L + c.R;
+            if (tot < 4) return null;
+            const shortPct = Math.round(c.S / tot * 100);
+            const longPct = Math.round(c.Lg / tot * 100);
+            const paceAxis = c.S + c.Lg;
+            return (
+              <div style={{ marginBottom: 24, background: CARD, border: "1px solid " + BD, borderRadius: 12, padding: "14px 16px" }}>
+                <div style={{ fontSize: 15, fontWeight: 800, color: T1, marginBottom: 4 }}>Approach Distance Control -- Short vs Long Bias</div>
+                <div style={{ color: T3, fontSize: 11, marginBottom: 12 }}>Of {tot} approach misses with a recorded direction. A heavy short bias almost always means under-clubbing.</div>
+                <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+                  {[["Short",c.S,shortPct,RD],["Long",c.Lg,longPct,OR],["Left",c.L,Math.round(c.L/tot*100),BL],["Right",c.R,Math.round(c.R/tot*100),TL]].map(([l,n,p,col]) => (
+                    <div key={l} style={{ flex: 1, background: C2, borderRadius: 8, padding: "10px 6px", textAlign: "center" }}>
+                      <div style={{ fontFamily: "monospace", fontSize: 20, fontWeight: 800, color: col }}>{p}%</div>
+                      <div style={{ fontSize: 10, color: T2 }}>{l}</div>
+                      <div style={{ fontSize: 9, color: T3 }}>{n}x</div>
+                    </div>
+                  ))}
+                </div>
+                {shortPct >= 45 && (
+                  <div style={{ padding: "9px 11px", background: RDL, borderRadius: 8, fontSize: 12, color: T2 }}>
+                    <b style={{ color: RD }}>{shortPct}% of your approach misses are short.</b> That is a club-selection leak, not a swing fault -- take one more club and commit to the number. Most amateurs under-club because they quote their best carry, not their average.
+                  </div>
+                )}
+                {shortPct < 45 && (c.S + c.Lg) / tot >= 0.55 && (
+                  <div style={{ padding: "9px 11px", background: ORL, borderRadius: 8, fontSize: 12, color: T2 }}>
+                    Your misses are mostly long/short ({Math.round(paceAxis/tot*100)}% on the distance axis) rather than left/right -- distance control is the lever, not start line.
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
           {/* ===== APPROACH BY CLUB - GREENS HIT (approach skill) + MISS PATTERN ===== */}
           {(() => {
             const m = {};
@@ -3079,6 +3171,411 @@ export default function App() {
           )}
         </Box>
 
+      </div>
+    );
+  }
+
+  // -- SCORING (distribution, conversion, leaks) --
+  function Scoring() {
+    const NAVY = "#18213a", NAVY2 = "#1a3a5c";
+    const [win, setWin] = useState(20);
+    if (!rSG.length) return <div style={{ color: T3, padding: 40, textAlign: "center" }}>No rounds yet. Log rounds to see scoring analytics.</div>;
+    const rounds = win === 0 ? rSG : rSG.slice(-win);
+    const holes = rounds.flatMap(r => r.holes || []);
+    const nR = rounds.length;
+    const per = (n) => nR ? (n / nR).toFixed(1) : "0";
+
+    // Scoring distribution
+    const rel = holes.map(h => (h.score || h.par) - h.par);
+    const dist = {
+      eagle: rel.filter(d => d <= -2).length,
+      birdie: rel.filter(d => d === -1).length,
+      par: rel.filter(d => d === 0).length,
+      bogey: rel.filter(d => d === 1).length,
+      dbl: rel.filter(d => d === 2).length,
+      tpl: rel.filter(d => d >= 3).length,
+    };
+    const totalH = holes.length || 1;
+    const distRow = [
+      ["Eagle+", dist.eagle, GN], ["Birdie", dist.birdie, GNL2()], ["Par", dist.par, BL],
+      ["Bogey", dist.bogey, OR], ["Double", dist.dbl, RD], ["Triple+", dist.tpl, "#7a1f1f"],
+    ];
+    function GNL2(){ return "#3fae6e"; }
+
+    // Birdie conversion: of GIR holes, % birdie-or-better
+    const girHoles = holes.filter(h => h.gir);
+    const girBirdie = girHoles.filter(h => (h.score||h.par) <= h.par - 1).length;
+    const birdieConv = girHoles.length ? Math.round(girBirdie / girHoles.length * 100) : null;
+
+    // Par-type scoring
+    const byPar = [3,4,5].map(p => {
+      const hs = holes.filter(h => h.par === p);
+      const avg = hs.length ? (hs.reduce((s,h)=>s+(h.score||p),0)/hs.length) : null;
+      const birdieBetter = hs.filter(h => (h.score||p) <= p-1).length;
+      return { p, n: hs.length, avg, vs: avg!=null ? avg - p : null, conv: hs.length ? Math.round(birdieBetter/hs.length*100) : 0 };
+    });
+
+    // Bounce-back: after a bogey-or-worse, next hole birdie-or-better
+    let bbOpp = 0, bbMade = 0, dblAfterDrop = 0;
+    rounds.forEach(r => {
+      const hs = r.holes || [];
+      for (let i = 0; i < hs.length - 1; i++) {
+        const cur = (hs[i].score||hs[i].par) - hs[i].par;
+        if (cur >= 1) {
+          bbOpp++;
+          const nxt = (hs[i+1].score||hs[i+1].par) - hs[i+1].par;
+          if (nxt <= -1) bbMade++;
+          if (nxt >= 2) dblAfterDrop++;
+        }
+      }
+    });
+    const bbRate = bbOpp ? Math.round(bbMade / bbOpp * 100) : null;
+
+    // Front 9 / Back 9 / closing 3
+    const splitAvg = (lo, hi) => {
+      const hs = holes.filter(h => h.hole >= lo && h.hole <= hi);
+      return hs.length ? (hs.reduce((s,h)=>s+((h.score||h.par)-h.par),0)/hs.length) : null;
+    };
+    const f9 = splitAvg(1,9), b9 = splitAvg(10,18), close3 = splitAvg(16,18), open3 = splitAvg(1,3);
+
+    // Leak waterfall (per round)
+    const lost3putt = holes.reduce((s,h)=>s+Math.max(0,(h.putts||2)-2),0);
+    const lostPenalty = holes.filter(h=>h.hazard).length;
+    const dblPlus = dist.dbl + dist.tpl;
+    const totalOver = rel.reduce((s,d)=>s+Math.max(0,d),0);
+
+    const Card = ({ label, value, sub, color }) => (
+      <div style={{ flex: 1, minWidth: 76, background: CARD, border: "1px solid " + BD, borderRadius: 12, padding: "12px 8px", textAlign: "center" }}>
+        <div style={{ fontFamily: "monospace", fontSize: 22, fontWeight: 800, color }}>{value}</div>
+        <div style={{ fontSize: 10, color: T2, fontWeight: 600, marginTop: 2 }}>{label}</div>
+        {sub && <div style={{ fontSize: 9, color: T3, marginTop: 1 }}>{sub}</div>}
+      </div>
+    );
+
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <div style={{ display: "flex", gap: 6 }}>
+          {[[10,"Last 10"],[20,"Last 20"],[0,"All"]].map(([n,l]) => (
+            <button key={n} onClick={() => setWin(n)}
+              style={{ flex: 1, padding: "8px 0", fontSize: 12, fontWeight: 700, borderRadius: 8, cursor: "pointer",
+                border: "1px solid " + (win===n?BL:BD), background: win===n?BL:CARD, color: win===n?"#fff":T2 }}>
+              {l}
+            </button>
+          ))}
+        </div>
+
+        {/* THE +2 LEVER: doubles control */}
+        <div style={{ background: "linear-gradient(135deg," + NAVY + "," + NAVY2 + ")", borderRadius: 14, padding: "16px", color: "#fff" }}>
+          <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 2 }}>BIG-NUMBER CONTROL</div>
+          <div style={{ fontSize: 11, color: "rgba(255,255,255,0.7)", marginBottom: 12 }}>The gap between 3 and +2 is mostly fewer doubles, not more birdies.</div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontFamily: "monospace", fontSize: 36, fontWeight: 900, color: per(dblPlus) <= 1 ? "#7ee0a0" : per(dblPlus) <= 2 ? "#ffd27a" : "#ff9a9a" }}>{per(dblPlus)}</div>
+              <div style={{ fontSize: 11, color: "rgba(255,255,255,0.8)" }}>doubles+ / round</div>
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontFamily: "monospace", fontSize: 36, fontWeight: 900, color: "#9ab8ff" }}>{per(dist.birdie + dist.eagle)}</div>
+              <div style={{ fontSize: 11, color: "rgba(255,255,255,0.8)" }}>birdies / round</div>
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontFamily: "monospace", fontSize: 36, fontWeight: 900, color: "#7ee0c0" }}>{Math.round(dist.par/totalH*100)}%</div>
+              <div style={{ fontSize: 11, color: "rgba(255,255,255,0.8)" }}>pars or better</div>
+            </div>
+          </div>
+        </div>
+
+        {/* Scoring distribution */}
+        <Box>
+          <Lbl t="Scoring Distribution (per hole)" />
+          <div style={{ display: "flex", height: 26, borderRadius: 7, overflow: "hidden", marginTop: 10, marginBottom: 10 }}>
+            {distRow.map(([l,n,c]) => n > 0 && (
+              <div key={l} style={{ width: (n/totalH*100) + "%", background: c, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                {n/totalH > 0.06 && <span style={{ fontSize: 10, fontWeight: 800, color: "#fff" }}>{n}</span>}
+              </div>
+            ))}
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {distRow.map(([l,n,c]) => (
+              <div key={l} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: T2 }}>
+                <span style={{ width: 10, height: 10, borderRadius: 2, background: c, display: "inline-block" }} />
+                {l}: <b style={{ color: T1 }}>{n}</b> <span style={{ color: T3 }}>({per(n)}/rd)</span>
+              </div>
+            ))}
+          </div>
+        </Box>
+
+        {/* Birdie conversion + scoring KPIs */}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          <Card label="Birdie Conv." value={birdieConv != null ? birdieConv + "%" : "--"} sub="of GIR holes" color={birdieConv >= 25 ? GN : birdieConv >= 18 ? GL : OR} />
+          <Card label="Bogeys / Rd" value={per(dist.bogey)} color={per(dist.bogey) <= 4 ? GN : per(dist.bogey) <= 6 ? GL : RD} />
+          <Card label="Bounce-back" value={bbRate != null ? bbRate + "%" : "--"} sub="birdie after drop" color={bbRate >= 20 ? GN : bbRate >= 12 ? GL : OR} />
+          <Card label="Dbl after drop" value={per(dblAfterDrop)} sub="tilt control" color={per(dblAfterDrop) <= 0.5 ? GN : per(dblAfterDrop) <= 1 ? GL : RD} />
+        </div>
+
+        {/* Par-type */}
+        <Box>
+          <Lbl t="Scoring by Par Type" />
+          <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 10 }}>
+            {byPar.map(p => p.n > 0 && (
+              <div key={p.p} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ width: 52, fontSize: 13, fontWeight: 700, color: T1 }}>Par {p.p}</span>
+                <span style={{ fontFamily: "monospace", fontSize: 15, fontWeight: 800, color: p.vs <= 0.1 ? GN : p.vs <= 0.4 ? GL : RD, width: 64 }}>
+                  {p.vs >= 0 ? "+" : ""}{p.vs.toFixed(2)}
+                </span>
+                <span style={{ fontSize: 11, color: T3, width: 56 }}>avg {p.avg.toFixed(2)}</span>
+                <div style={{ flex: 1, fontSize: 11, color: T2, textAlign: "right" }}>
+                  {p.p === 5 ? <span>birdie+ <b style={{ color: p.conv>=35?GN:OR }}>{p.conv}%</b></span> : <span>{p.n} holes</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+          {byPar[2].n > 0 && byPar[2].conv < 35 && (
+            <div style={{ marginTop: 10, padding: "9px 11px", background: ORL, borderRadius: 8, fontSize: 12, color: T2 }}>
+              Par-5 birdie rate is <b style={{ color: OR }}>{byPar[2].conv}%</b>. +2 players bank their edge on par 5s -- this is free scoring if your long game lets you reach or pitch close.
+            </div>
+          )}
+        </Box>
+
+        {/* Front/back/closing */}
+        <Box>
+          <Lbl t="Where in the Round (avg vs par per hole)" />
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            {[["Holes 1-3",open3],["Front 9",f9],["Back 9",b9],["Closing 16-18",close3]].map(([l,v]) => (
+              <div key={l} style={{ flex: 1, background: C2, borderRadius: 8, padding: "10px 6px", textAlign: "center" }}>
+                <div style={{ fontFamily: "monospace", fontSize: 18, fontWeight: 800, color: v == null ? T3 : v <= 0.15 ? GN : v <= 0.4 ? GL : RD }}>
+                  {v == null ? "--" : (v >= 0 ? "+" : "") + v.toFixed(2)}
+                </div>
+                <div style={{ fontSize: 10, color: T2, marginTop: 3 }}>{l}</div>
+              </div>
+            ))}
+          </div>
+          {close3 != null && f9 != null && close3 > f9 + 0.25 && (
+            <div style={{ marginTop: 10, padding: "9px 11px", background: RDL, borderRadius: 8, fontSize: 12, color: T2 }}>
+              You play the closing 3 noticeably worse than the front -- a classic pressure/fatigue tell worth a pre-shot reset on 16-18.
+            </div>
+          )}
+        </Box>
+
+        {/* Leak waterfall */}
+        <Box>
+          <Lbl t="Where Your Over-Par Strokes Go" />
+          <div style={{ fontSize: 11, color: T3, marginBottom: 10 }}>Total strokes lost to par across {nR} rounds: <b style={{ color: T1 }}>{totalOver}</b></div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+            {[["3-putts (extra putts)", lost3putt, RD],["Penalty strokes", lostPenalty, OR],["Double+ holes", dblPlus, "#7a1f1f"]].map(([l,n,c]) => (
+              <div key={l} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ width: 130, fontSize: 12, color: T2 }}>{l}</span>
+                <div style={{ flex: 1, height: 16, background: C2, borderRadius: 5, overflow: "hidden" }}>
+                  <div style={{ width: (totalOver ? Math.min(100, n/totalOver*100) : 0) + "%", height: "100%", background: c }} />
+                </div>
+                <span style={{ width: 64, fontSize: 11, color: T3, textAlign: "right" }}>{n} ({per(n)}/rd)</span>
+              </div>
+            ))}
+          </div>
+        </Box>
+      </div>
+    );
+  }
+
+  // -- PUTTING (dedicated) --
+  function Putting() {
+    const NAVY = "#18213a", NAVY2 = "#1a3a5c";
+    const [win, setWin] = useState(20);
+    if (!rSG.length) return <div style={{ color: T3, padding: 40, textAlign: "center" }}>No rounds yet. Log rounds to build your putting profile.</div>;
+    const rounds = win === 0 ? rSG : rSG.slice(-win);
+    const ph = rounds.flatMap(r => (r.holes || []).filter(h => h.puttDist != null));
+    const allH = rounds.flatMap(r => r.holes || []);
+    const holed = (h) => h.puttMiss === "made" || h.putts === 1;
+
+    // Headline metrics
+    const totalPutts = rounds.reduce((s,r) => s + (r.totalPutts || 0), 0);
+    const puttsPerRound = rounds.length ? (totalPutts / rounds.length).toFixed(1) : "--";
+    const girH = allH.filter(h => h.gir);
+    const puttsPerGir = girH.length ? (girH.reduce((s,h)=>s+(h.putts||2),0)/girH.length).toFixed(2) : "--";
+    const threePuttN = allH.filter(h => (h.putts||0) >= 3).length;
+    const threePuttRate = allH.length ? (threePuttN / allH.length * 100).toFixed(1) : "0";
+    const onePuttN = allH.filter(h => (h.putts||0) === 1).length;
+    const onePuttRate = allH.length ? (onePuttN / allH.length * 100).toFixed(1) : "0";
+
+    // Make % by distance
+    const dBands = [[0,1,"<1m",0.99],[1,2,"1-2m",0.88],[2,3,"2-3m",0.62],[3,5,"3-5m",0.40],[5,8,"5-8m",0.22],[8,99,"8m+",0.09]];
+    const distRows = dBands.map(([lo,hi,label,scr]) => {
+      const hs = ph.filter(h => h.puttDist >= lo && h.puttDist < hi);
+      const made = hs.filter(holed).length;
+      return { label, n: hs.length, pct: hs.length ? Math.round(made/hs.length*100) : null, scr: Math.round(scr*100) };
+    }).filter(r => r.n > 0);
+
+    // Make % by break / shape
+    const breaks = [["RtoL","R to L",PU],["LtoR","L to R",BL],["uphill","Uphill",GN],["downhill","Downhill",RD],["double","Double",OR]];
+    const breakRows = breaks.map(([v,label,c]) => {
+      const hs = ph.filter(h => h.puttBreak === v);
+      const made = hs.filter(holed).length;
+      return { label, c, n: hs.length, pct: hs.length ? Math.round(made/hs.length*100) : null };
+    }).filter(r => r.n > 0);
+
+    // MISS DIAGNOSTIC (pace vs line) - the short/online metric
+    const missH = ph.filter(h => h.puttMiss && h.puttMiss !== "made");
+    const mc = { short:0, long:0, left:0, right:0 };
+    missH.forEach(h => { if (mc[h.puttMiss] != null) mc[h.puttMiss]++; });
+    const missTotal = mc.short + mc.long + mc.left + mc.right;
+    const paceMiss = mc.short + mc.long;
+    const lineMiss = mc.left + mc.right;
+    const shortPct = missTotal ? Math.round(mc.short / missTotal * 100) : 0;
+
+    // 3-putts by first-putt distance
+    const tpBands = [[0,3,"<3m"],[3,6,"3-6m"],[6,10,"6-10m"],[10,99,"10m+"]];
+    const tpRows = tpBands.map(([lo,hi,label]) => {
+      const hs = ph.filter(h => h.puttDist >= lo && h.puttDist < hi);
+      const tp = hs.filter(h => (h.putts||0) >= 3).length;
+      return { label, n: hs.length, tp, rate: hs.length ? Math.round(tp/hs.length*100) : 0 };
+    }).filter(r => r.n > 0);
+
+    const Card = ({ label, value, sub, color }) => (
+      <div style={{ flex: 1, minWidth: 78, background: CARD, border: "1px solid " + BD, borderRadius: 12, padding: "12px 10px", textAlign: "center" }}>
+        <div style={{ fontFamily: "monospace", fontSize: 24, fontWeight: 800, color }}>{value}</div>
+        <div style={{ fontSize: 10, color: T2, fontWeight: 600, marginTop: 2 }}>{label}</div>
+        {sub && <div style={{ fontSize: 9, color: T3, marginTop: 1 }}>{sub}</div>}
+      </div>
+    );
+
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        {/* window toggle */}
+        <div style={{ display: "flex", gap: 6 }}>
+          {[[10,"Last 10"],[20,"Last 20"],[0,"All"]].map(([n,l]) => (
+            <button key={n} onClick={() => setWin(n)}
+              style={{ flex: 1, padding: "8px 0", fontSize: 12, fontWeight: 700, borderRadius: 8, cursor: "pointer",
+                border: "1px solid " + (win===n?BL:BD), background: win===n?BL:CARD, color: win===n?"#fff":T2 }}>
+              {l}
+            </button>
+          ))}
+        </div>
+
+        {/* Headline */}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          <Card label="Putts / Round" value={puttsPerRound} color={parseFloat(puttsPerRound) <= 30 ? GN : parseFloat(puttsPerRound) <= 32 ? GL : RD} />
+          <Card label="Putts / GIR" value={puttsPerGir} sub="putting skill" color={parseFloat(puttsPerGir) <= 1.85 ? GN : parseFloat(puttsPerGir) <= 2.0 ? GL : RD} />
+          <Card label="3-Putt %" value={threePuttRate + "%"} sub={threePuttN + " total"} color={parseFloat(threePuttRate) <= 3 ? GN : parseFloat(threePuttRate) <= 6 ? GL : RD} />
+          <Card label="1-Putt %" value={onePuttRate + "%"} sub={onePuttN + " total"} color={parseFloat(onePuttRate) >= 40 ? GN : parseFloat(onePuttRate) >= 30 ? GL : OR} />
+        </div>
+
+        {/* ===== MISS DIAGNOSTIC: PACE vs LINE (the short/online check) ===== */}
+        <div style={{ background: "linear-gradient(135deg," + NAVY + "," + NAVY2 + ")", borderRadius: 14, padding: "16px 16px", color: "#fff" }}>
+          <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: "0.04em", marginBottom: 2 }}>MISS DIAGNOSTIC -- Pace vs Line</div>
+          <div style={{ fontSize: 11, color: "rgba(255,255,255,0.7)", marginBottom: 14 }}>Where your missed first putts finish. Short = pace/commitment. Left/Right = read or face.</div>
+          {missTotal === 0 ? (
+            <div style={{ fontSize: 12, color: "rgba(255,255,255,0.7)" }}>Log "First Putt Result" on missed putts to build this. It is the fastest way to know if your strokes are pace or line.</div>
+          ) : (
+            <>
+              {/* big short number */}
+              <div style={{ display: "flex", alignItems: "flex-end", gap: 16, marginBottom: 14 }}>
+                <div>
+                  <div style={{ fontFamily: "monospace", fontSize: 48, fontWeight: 900, lineHeight: 1, color: shortPct >= 45 ? "#ff9a9a" : "#7ee0a0" }}>{shortPct}%</div>
+                  <div style={{ fontSize: 11, color: "rgba(255,255,255,0.8)", marginTop: 3 }}>of misses finish SHORT</div>
+                </div>
+                <div style={{ flex: 1, fontSize: 11, color: "rgba(255,255,255,0.85)", lineHeight: 1.5 }}>
+                  {shortPct >= 45
+                    ? "You leave it short far more than you should. That is pace, not line -- commit to getting the ball past the hole. If the face feels soft (e.g. a soft-insert mallet) and pace is the recurring fault, that is real evidence for a firmer-feedback putter."
+                    : "Your short-miss rate is controlled. Pace is not your main leak right now."}
+                </div>
+              </div>
+              {/* breakdown bars */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {[["Short",mc.short,"#ff9a9a"],["Long",mc.long,"#ffd27a"],["Left",mc.left,"#9ab8ff"],["Right",mc.right,"#7ee0c0"]].map(([l,n,c]) => (
+                  <div key={l} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ width: 44, fontSize: 12, color: "rgba(255,255,255,0.85)" }}>{l}</span>
+                    <div style={{ flex: 1, height: 16, background: "rgba(255,255,255,0.12)", borderRadius: 5, overflow: "hidden" }}>
+                      <div style={{ width: (missTotal ? n/missTotal*100 : 0) + "%", height: "100%", background: c }} />
+                    </div>
+                    <span style={{ width: 56, fontSize: 11, color: "rgba(255,255,255,0.8)", textAlign: "right" }}>{n} ({missTotal?Math.round(n/missTotal*100):0}%)</span>
+                  </div>
+                ))}
+              </div>
+              <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+                <div style={{ flex: 1, background: "rgba(255,255,255,0.1)", borderRadius: 8, padding: "8px 10px" }}>
+                  <div style={{ fontSize: 10, color: "rgba(255,255,255,0.7)" }}>PACE MISSES (short+long)</div>
+                  <div style={{ fontFamily: "monospace", fontSize: 18, fontWeight: 800 }}>{missTotal?Math.round(paceMiss/missTotal*100):0}%</div>
+                </div>
+                <div style={{ flex: 1, background: "rgba(255,255,255,0.1)", borderRadius: 8, padding: "8px 10px" }}>
+                  <div style={{ fontSize: 10, color: "rgba(255,255,255,0.7)" }}>LINE MISSES (left+right)</div>
+                  <div style={{ fontFamily: "monospace", fontSize: 18, fontWeight: 800 }}>{missTotal?Math.round(lineMiss/missTotal*100):0}%</div>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* ===== MAKE % BY DISTANCE ===== */}
+        <Box>
+          <Lbl t="Make % by Distance (vs Scratch)" />
+          {distRows.length === 0 ? <div style={{ color: T3, fontSize: 12, marginTop: 8 }}>No first-putt distances logged yet.</div> : (
+            <div style={{ display: "flex", gap: 10, alignItems: "flex-end", marginTop: 12, height: 150 }}>
+              {distRows.map(d => {
+                const c = d.pct == null ? T3 : d.pct >= d.scr ? GN : d.pct >= d.scr - 12 ? GL : RD;
+                return (
+                  <div key={d.label} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", height: "100%", justifyContent: "flex-end" }}>
+                    <div style={{ fontSize: 12, fontWeight: 800, color: c, fontFamily: "monospace" }}>{d.pct}%</div>
+                    <div style={{ width: "100%", background: C2, borderRadius: 5, position: "relative", flex: 1, marginTop: 4, display: "flex", flexDirection: "column", justifyContent: "flex-end", overflow: "hidden" }}>
+                      <div style={{ width: "100%", height: (d.pct||0) + "%", background: c, borderRadius: "5px 5px 0 0" }} />
+                      <div style={{ position: "absolute", left: 0, right: 0, bottom: d.scr + "%", borderTop: "2px dashed " + T1, opacity: 0.5 }} title="scratch" />
+                    </div>
+                    <div style={{ fontSize: 10, color: T2, fontWeight: 600, marginTop: 4 }}>{d.label}</div>
+                    <div style={{ fontSize: 9, color: T3 }}>{d.n}x</div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          <div style={{ fontSize: 10, color: T3, marginTop: 8, fontStyle: "italic" }}>Dashed line = scratch make rate. Bars above it = gaining.</div>
+        </Box>
+
+        {/* ===== MAKE % BY SHAPE / BREAK ===== */}
+        <Box>
+          <Lbl t="Make % by Break / Slope" />
+          {breakRows.length === 0 ? <div style={{ color: T3, fontSize: 12, marginTop: 8 }}>Log putt break to find your weak shapes.</div> : (
+            <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 10 }}>
+              {breakRows.map(b => (
+                <div key={b.label} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <span style={{ width: 74, fontSize: 13, color: T1, fontWeight: 600 }}>{b.label}</span>
+                  <div style={{ flex: 1, height: 20, background: C2, borderRadius: 6, overflow: "hidden" }}>
+                    <div style={{ width: (b.pct||0) + "%", height: "100%", background: b.c, display: "flex", alignItems: "center", justifyContent: "flex-end", paddingRight: 6 }}>
+                      <span style={{ fontSize: 11, fontWeight: 800, color: "#fff" }}>{b.pct}%</span>
+                    </div>
+                  </div>
+                  <span style={{ width: 36, fontSize: 10, color: T3, textAlign: "right" }}>{b.n}x</span>
+                </div>
+              ))}
+              {(() => {
+                const ranked = [...breakRows].filter(b=>b.n>=2).sort((a,b)=>a.pct-b.pct);
+                if (ranked.length < 2) return null;
+                return <div style={{ marginTop: 4, padding: "10px 12px", background: PUL, borderRadius: 8, fontSize: 12, color: T2 }}>
+                  Weakest shape: <b style={{ color: PU }}>{ranked[0].label}</b> ({ranked[0].pct}%). Worth dedicated reps -- a one-shape weakness is usually read or start-line bias, not stroke.
+                </div>;
+              })()}
+            </div>
+          )}
+        </Box>
+
+        {/* ===== 3-PUTT AVOIDANCE ===== */}
+        <Box>
+          <Lbl t="3-Putt Avoidance by First-Putt Distance" />
+          {tpRows.length === 0 ? <div style={{ color: T3, fontSize: 12, marginTop: 8 }}>No data yet.</div> : (
+            <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 10 }}>
+              {tpRows.map(t => {
+                const c = t.rate <= 3 ? GN : t.rate <= 10 ? GL : RD;
+                return (
+                  <div key={t.label} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <span style={{ width: 60, fontSize: 13, color: T1, fontWeight: 600 }}>{t.label}</span>
+                    <div style={{ flex: 1, height: 18, background: C2, borderRadius: 6, overflow: "hidden" }}>
+                      <div style={{ width: Math.min(100, t.rate*4) + "%", height: "100%", background: c }} />
+                    </div>
+                    <span style={{ width: 80, fontSize: 11, color: T2, textAlign: "right" }}>{t.tp}/{t.n} ({t.rate}%)</span>
+                  </div>
+                );
+              })}
+              <div style={{ fontSize: 11, color: T3, marginTop: 2, fontStyle: "italic" }}>Lag distance (long first putts) is where 3-putts live. Scratch 3-putts ~3% overall.</div>
+            </div>
+          )}
+        </Box>
       </div>
     );
   }
@@ -3538,6 +4035,8 @@ export default function App() {
         {tab === "insights" && <Insights />}
           {tab === "hist"     && HcpSetup()}
           {tab === "gameplan" && GamePlan()}
+          {tab === "putting"  && <Putting />}
+          {tab === "scoring"  && <Scoring />}
       </div>
       <div style={{ borderTop: "1px solid " + BD, padding: "12px 24px", display: "flex", justifyContent: "space-between", fontSize: 10, color: T3, maxWidth: 1200, margin: "0 auto" }}>
         <span>StrokeLab | SG: Broadie (2014) | DataGolf / DECADE (Fawcett) | Blue R73 S141 | Black R75 S143</span>
