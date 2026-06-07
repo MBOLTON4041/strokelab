@@ -1427,7 +1427,8 @@ export default function App() {
     const holeData = HOLES.map(ch => {
       const hd = r20.map(r => r.holes && r.holes.find(h => h.hole === ch.h)).filter(Boolean);
       if (!hd.length) return { hole: ch.h, par: ch.p, n: 0, avgScore: ch.p, pm: 0, girPct: 0, avgPutts: 2, avgProx: 0, scrPct: 0, hazardPct: 0, firPct: null, avgDist: 0, clubs: {}, missDirs: {} };
-      const firHoles = hd.filter(h => h.fir !== undefined && h.par >= 4);
+      const firHit = (h) => h.teeResult ? h.teeResult === "fairway" : h.fir === true;
+      const firHoles = hd.filter(h => h.par >= 4 && (h.teeResult != null || h.fir !== undefined && h.fir !== null));
       const girHoles = hd.filter(h => h.gir);
       const missH    = hd.filter(h => !h.gir && h.udAtt);
       const distH    = hd.filter(h => h.distToHole > 0);
@@ -1437,7 +1438,7 @@ export default function App() {
         if (!h.teeClub || h.par < 4) return;
         if (!teeMap[h.teeClub]) teeMap[h.teeClub] = { total: 0, hit: 0, L: 0, R: 0, Sh: 0 };
         teeMap[h.teeClub].total++;
-        if (h.fir === true)  teeMap[h.teeClub].hit++;
+        if (firHit(h)) teeMap[h.teeClub].hit++;
         if (h.firMiss === "L")  teeMap[h.teeClub].L++;
         if (h.firMiss === "R")  teeMap[h.teeClub].R++;
         if (h.firMiss === "Sh") teeMap[h.teeClub].Sh++;
@@ -1471,7 +1472,7 @@ export default function App() {
         avgProx:  girHoles.length ? Math.round(girHoles.reduce((s,h) => s+(h.prox||25),0)/girHoles.length) : 0,
         scrPct:   missH.length ? Math.round(missH.filter(h=>h.udMade).length/missH.length*100) : null,
         hazardPct:Math.round(hd.filter(h=>h.hazard).length/hd.length*100),
-        firPct:   firHoles.length ? Math.round(firHoles.filter(h=>h.fir===true).length/firHoles.length*100) : null,
+        firPct:   firHoles.length ? Math.round(firHoles.filter(firHit).length/firHoles.length*100) : null,
         avgDist:  distH.length ? Math.round(distH.reduce((s,h)=>s+(h.distToHole||0),0)/distH.length) : 0,
         topClub:  topClub ? topClub[0] : "--",
         missDirs, teeMap, apprMap,
