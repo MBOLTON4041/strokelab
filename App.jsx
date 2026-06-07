@@ -59,7 +59,8 @@ const TEE_CLUBS  = BAG.map(c => c.name); // all clubs valid off tee (par 3s etc)
 const APPR_CLUBS = BAG.filter(c => c.appr).map(c => c.name);
 const HAZARD_OPTS = ["OB","Water","Lateral","Drop"];
 
-const PUTT_EV = [[2,1.01],[3,1.08],[5,1.20],[7,1.30],[10,1.49],[15,1.65],[20,1.77],[25,1.85],[30,1.90],[40,1.97],[50,2.02],[75,2.12],[100,2.20]];
+// Expected putts to hole out from distance in FEET -- SCRATCH golfer baseline
+const PUTT_EV = [[2,1.02],[3,1.12],[5,1.28],[7,1.42],[10,1.61],[15,1.76],[20,1.85],[25,1.91],[30,1.96],[40,2.04],[50,2.10],[75,2.20],[100,2.28]];
 function puttEV(ft) {
   const f = Math.max(2, ft || 25);
   for (let i = 0; i < PUTT_EV.length - 1; i++) {
@@ -78,7 +79,7 @@ function calcSG(r) {
   const fw = r.fairwaysTotal > 0 ? r.fairwaysHit / r.fairwaysTotal : 0.62;
   const avgProxFt = (r.avgProxFt || 7) * M2FT;         // avgProxFt field is really metres; convert
 
-  // SG PUTTING (vs tour baseline) -- prefer per-hole first-putt distances now captured every hole
+  // SG PUTTING (vs SCRATCH baseline) -- prefer per-hole first-putt distances now captured every hole
   let sgPutt;
   const holes = r.holes || [];
   const puttedWithDist = holes.filter(h => h.putts > 0 && h.puttDist > 0);
@@ -94,11 +95,11 @@ function calcSG(r) {
 
   const sgOTT  = parseFloat(((fw - 0.62) * (r.fairwaysTotal || 14) * 0.30 + ((r.avgDrive || 238) - 238) / 9 * 0.09).toFixed(2));
   const proxAdj = r.girsHit > 0 ? ((22 - avgProxFt) / 8) * 0.12 * r.girsHit : 0;  // 22 ft baseline, now comparing ft to ft
-  const sgApp  = parseFloat(((gir - 0.70) * 18 * 0.40 + proxAdj).toFixed(2));
+  const sgApp  = parseFloat(((gir - 0.59) * 18 * 0.40 + proxAdj).toFixed(2));   // 0.59 = scratch GIR
   const att = r.udAttempts || 0;
-  const sc  = att > 0 ? r.udMade / att : 0.58;
-  const sandG = r.sandAtt > 0 ? (r.sandSaves / r.sandAtt - 0.55) * r.sandAtt * 0.28 : 0;
-  const sgATG = parseFloat((att > 0 ? (sc - 0.58) * att * 0.32 + sandG : 0).toFixed(2));
+  const sc  = att > 0 ? r.udMade / att : 0.50;
+  const sandG = r.sandAtt > 0 ? (r.sandSaves / r.sandAtt - 0.48) * r.sandAtt * 0.28 : 0;   // 0.48 = scratch sand save
+  const sgATG = parseFloat((att > 0 ? (sc - 0.50) * att * 0.32 + sandG : 0).toFixed(2));   // 0.50 = scratch scramble
   return { sgPutt, sgOTT, sgApp, sgATG, sgTotal: parseFloat((sgPutt + sgOTT + sgApp + sgATG).toFixed(2)) };
 }
 
@@ -1665,7 +1666,7 @@ export default function App() {
             {stat("GIR", h.girPct + "%", h.girPct >= 65 ? GN : h.girPct >= 45 ? GL : RD)}
             {h.firPct !== null && stat("FIR", h.firPct + "%", h.firPct >= 65 ? GN : h.firPct >= 45 ? GL : RD)}
             {stat("Putts", h.avgPutts, h.avgPutts <= 1.8 ? GN : h.avgPutts <= 2.1 ? GL : RD)}
-            {h.avgProx > 0 && stat("Prox", h.avgProx + "m", h.avgProx <= 20 ? GN : h.avgProx <= 30 ? GL : RD)}
+            {stat("Prox", h.avgProx > 0 ? h.avgProx + "m" : "--", h.avgProx === 0 ? T3 : h.avgProx <= 20 ? GN : h.avgProx <= 30 ? GL : RD)}
             {h.scrPct !== null && stat("Scr", h.scrPct + "%", h.scrPct >= 60 ? GN : h.scrPct >= 40 ? GL : RD)}
           </div>
 
@@ -1972,14 +1973,14 @@ export default function App() {
               const avgProx = proxArr.length ? (proxArr.reduce((a,b)=>a+b,0)/proxArr.length).toFixed(1) : null;
               return { label, n: hs.length, girPct, avgProx };
             }).filter(r => r.n > 0);
-            // Tour GIR benchmarks by band (approx): closer = higher
-            const tourGIR = { "<100m":80, "100-125":72, "125-150":65, "150-175":56, "175-200":47, "200m+":38 };
+            // SCRATCH GIR benchmarks by band (approx): closer = higher
+            const tourGIR = { "<100m":70, "100-125":60, "125-150":52, "150-175":43, "175-200":34, "200m+":26 };
             return (
               <div style={{ overflowX: "auto", marginTop: 8 }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                   <thead>
                     <tr style={{ borderBottom: "2px solid " + BD, background: C2 }}>
-                      {["Band","Shots","GIR%","Tour GIR%","Avg Prox (m)","Read"].map(h =>
+                      {["Band","Shots","GIR%","Scratch GIR%","Avg Prox (m)","Read"].map(h =>
                         <th key={h} style={{ padding: "7px 8px", textAlign: "center", color: T2, fontSize: 10, fontWeight: 700, textTransform: "uppercase" }}>{h}</th>)}
                     </tr>
                   </thead>
@@ -2003,7 +2004,7 @@ export default function App() {
                   </tbody>
                 </table>
                 <div style={{ fontSize: 11, color: T3, marginTop: 8, fontStyle: "italic" }}>
-                  Read column = your GIR% minus tour benchmark for that band. The most negative band is your highest-leverage practice zone.
+                  Read column = your GIR% minus the scratch benchmark for that band. The most negative band is your highest-leverage practice zone.
                 </div>
               </div>
             );
@@ -2058,20 +2059,20 @@ export default function App() {
 
         {/* ===== PUTTING MAKE% BY DISTANCE ===== */}
         <Box style={{ marginTop: 16 }}>
-          <Lbl t="Putting Make% vs Tour by Distance (last 20)" />
+          <Lbl t="Putting Make% vs Scratch by Distance (last 20)" />
           {(() => {
             const puttH = r20.flatMap(r => (r.holes||[]).filter(h => h.puttDist > 0));
             if (!puttH.length) return <div style={{ color: T3, fontSize: 13, marginTop: 8 }}>No first-putt distance data yet. Log rounds with the new First Putt Distance field.</div>;
             const bands = [
-              [0,1.5,"0-1.5m",0.95], [1.5,2.5,"1.5-2.5m",0.78], [2.5,4,"2.5-4m",0.55],
-              [4,6,"4-6m",0.38], [6,9,"6-9m",0.24], [9,99,"9m+",0.12]
+              [0,1.5,"0-1.5m",0.92], [1.5,2.5,"1.5-2.5m",0.70], [2.5,4,"2.5-4m",0.45],
+              [4,6,"4-6m",0.30], [6,9,"6-9m",0.18], [9,99,"9m+",0.09]
             ];
-            const rows = bands.map(([lo,hi,label,tour]) => {
+            const rows = bands.map(([lo,hi,label,scr]) => {
               const hs = puttH.filter(h => h.puttDist >= lo && h.puttDist < hi);
               if (!hs.length) return null;
               const made = hs.filter(h => h.putts === 1).length;
               const pct = made / hs.length;
-              return { label, n: hs.length, pct, tour, delta: pct - tour };
+              return { label, n: hs.length, pct, tour: scr, delta: pct - scr };
             }).filter(Boolean);
             return (
               <div style={{ marginTop: 8 }}>
@@ -2085,11 +2086,11 @@ export default function App() {
                     </div>
                     <div style={{ position: "relative", height: 8, background: C2, borderRadius: 4 }}>
                       <div style={{ position: "absolute", left: 0, top: 0, height: 8, width: (r.pct*100)+"%", background: r.delta >= 0 ? GN : RD, borderRadius: 4 }} />
-                      <div style={{ position: "absolute", left: (r.tour*100)+"%", top: -2, height: 12, width: 2, background: T1 }} title="Tour benchmark" />
+                      <div style={{ position: "absolute", left: (r.tour*100)+"%", top: -2, height: 12, width: 2, background: T1 }} title="Scratch benchmark" />
                     </div>
                   </div>
                 ))}
-                <div style={{ fontSize: 11, color: T3, marginTop: 6, fontStyle: "italic" }}>Black line = tour make%. Bar past the line = gaining; short of it = losing.</div>
+                <div style={{ fontSize: 11, color: T3, marginTop: 6, fontStyle: "italic" }}>Black line = scratch make%. Bar past the line = gaining; short of it = losing.</div>
               </div>
             );
           })()}
@@ -2156,8 +2157,9 @@ export default function App() {
         if (!firByRound[dateKey][h.teeClub]) firByRound[dateKey][h.teeClub] = { hit: 0, total: 0, L: 0, R: 0, Sh: 0 };
         const c = firByRound[dateKey][h.teeClub];
         c.total++;
-        if (h.fir === true) c.hit++;
-        else if (h.fir === false) {
+        const _hit = h.teeResult ? h.teeResult === "fairway" : h.fir === true;
+        if (_hit) c.hit++;
+        else {
           if (h.firMiss === "L")  c.L++;
           if (h.firMiss === "R")  c.R++;
           if (h.firMiss === "Sh") c.Sh++;
@@ -2228,8 +2230,9 @@ export default function App() {
       if (!h.teeClub || h.par < 4) return;
       if (!teeClubMap[h.teeClub]) teeClubMap[h.teeClub] = { hit: 0, miss: 0, L: 0, R: 0, Sh: 0 };
       const c = teeClubMap[h.teeClub];
-      if (h.fir === true)       { c.hit++; }
-      else if (h.fir === false) {
+      const _hit = h.teeResult ? h.teeResult === "fairway" : h.fir === true;
+      if (_hit) { c.hit++; }
+      else {
         c.miss++;
         if (h.firMiss === "L")  c.L++;
         if (h.firMiss === "R")  c.R++;
@@ -2902,7 +2905,7 @@ export default function App() {
               })}
             </div>
             <div style={{ display: "flex", gap: 16, marginTop: 8, fontSize: 10 }}>
-              {[["Tour 3m","90%",GN],["Tour 6m","60%",GL],["Tour 10m","35%",OR]].map(([l,v,c]) => (
+              {[["Scratch 3m","82%",GN],["Scratch 6m","48%",GL],["Scratch 10m","26%",OR]].map(([l,v,c]) => (
                 <div key={l} style={{ color: T2 }}>{l}: <span style={{ color: c, fontWeight: 700 }}>{v}</span></div>
               ))}
             </div>
