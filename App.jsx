@@ -169,10 +169,6 @@ function parsePlan(s) {
   });
   return out;
 }
-function composePlan(p) {
-  if (!p.tee && !p.avoid && !p.approach && !p.green) return "";
-  return PLAN_FIELDS.map(([k,lab]) => lab + ": " + (p[k] || "")).join("\n");
-}
 function emptyRound() {
   return {
     date: new Date().toISOString().split("T")[0],
@@ -364,25 +360,36 @@ export default function App() {
   }, [hcpHistory]);
   const [histDraft, setHistDraft] = useState({ date: new Date().toISOString().split("T")[0], course: "", diff: "" });
   const [gpCourse, setGpCourse] = useState("");
-  const getHolePlan = (course, holeNum) => { const k = course || "Unspecified course"; return (coursePlans[k] && coursePlans[k][holeNum]) || ""; };
-  const setHolePlan = (course, holeNum, text) => {
+  // Plans are stored per course+hole as an object {tee,avoid,approach,green}. Legacy string values are migrated on read.
+  const getPlan = (course, holeNum) => {
     const k = course || "Unspecified course";
-    setCoursePlans(prev => ({
-      ...prev,
-      [k]: { ...(prev[k] || {}), [holeNum]: text }
-    }));
+    const raw = coursePlans[k] && coursePlans[k][holeNum];
+    if (raw && typeof raw === "object") return { tee:"", avoid:"", approach:"", green:"", ...raw };
+    return parsePlan(raw || "");   // string (legacy) or empty
+  };
+  const setPlanField = (course, holeNum, key, val) => {
+    const k = course || "Unspecified course";
+    setCoursePlans(prev => {
+      const cur = prev[k] && prev[k][holeNum];
+      const obj = (cur && typeof cur === "object") ? cur : parsePlan(cur || "");
+      return { ...prev, [k]: { ...(prev[k] || {}), [holeNum]: { tee:"", avoid:"", approach:"", green:"", ...obj, [key]: val } } };
+    });
+  };
+  // Labelled display string (non-empty fields only) for read-only views + "has a plan" checks
+  const planText = (course, holeNum) => {
+    const p = getPlan(course, holeNum);
+    return PLAN_FIELDS.filter(([key]) => (p[key] || "").trim()).map(([key, lab]) => lab + ": " + p[key].trim()).join("\n");
   };
   // Structured 4-line plan editor (Tee / Avoid / Approach / Green). Called inline (not as a component) so text inputs keep focus.
   const planFields = (course, holeNum, compact) => {
-    const p = parsePlan(getHolePlan(course, holeNum));
-    const set = (key, val) => setHolePlan(course, holeNum, composePlan({ ...p, [key]: val }));
+    const p = getPlan(course, holeNum);
     const ph = { tee: "club + aim line", avoid: "dead side / hazard", approach: "pin plan, ideal miss", green: "slope / where to leave it" };
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         {PLAN_FIELDS.map(([key, label]) => (
           <div key={key} style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
             <span style={{ width: 62, flexShrink: 0, fontSize: 11, fontWeight: 800, color: BL, textTransform: "uppercase", letterSpacing: "0.04em", paddingTop: 9 }}>{label}</span>
-            <textarea value={p[key]} onChange={e => set(key, e.target.value)} rows={compact ? 1 : 2} placeholder={ph[key]}
+            <textarea value={p[key] || ""} onChange={e => setPlanField(course, holeNum, key, e.target.value)} rows={compact ? 1 : 2} placeholder={ph[key]}
               style={{ flex: 1, minWidth: 0, background: CARD, border: "1px solid " + BD, borderRadius: 7, padding: "8px 10px", fontSize: 14, color: T1, fontFamily: "inherit", resize: "vertical", lineHeight: 1.4 }} />
           </div>
         ))}
@@ -1777,15 +1784,13 @@ export default function App() {
               <div style={{ fontSize: 10, color: T3 }}>avg vs par</div>
             </div>
           </div>
-
           {/* Saved game plan (from entry / Game Plan tab) */}
-          {getHolePlan(homeCourse, h.hole) && (
+          {planText(homeCourse, h.hole) && (
             <div style={{ background: "#eef4ff", border: "1px solid " + BL, borderRadius: 6, padding: "8px 10px", marginBottom: 10 }}>
               <div style={{ fontSize: 9, fontWeight: 700, color: BL, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3 }}>Plan{homeCourse ? " - " + homeCourse : ""}</div>
-              <div style={{ fontSize: 12, color: T1, whiteSpace: "pre-wrap", lineHeight: 1.4 }}>{getHolePlan(homeCourse, h.hole)}</div>
+              <div style={{ fontSize: 12, color: T1, whiteSpace: "pre-wrap", lineHeight: 1.4 }}>{planText(homeCourse, h.hole)}</div>
             </div>
           )}
-
           {/* Key stats row */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 5, marginBottom: 12 }}>
             {stat("GIR", h.girPct + "%", h.girPct >= 65 ? GN : h.girPct >= 45 ? GL : RD)}
@@ -1794,7 +1799,6 @@ export default function App() {
             {stat("Prox", h.avgProx > 0 ? h.avgProx + "m" : "--", h.avgProx === 0 ? T3 : h.avgProx <= 20 ? GN : h.avgProx <= 30 ? GL : RD)}
             {h.scrPct !== null && stat("Scr", h.scrPct + "%", h.scrPct >= 60 ? GN : h.scrPct >= 40 ? GL : RD)}
           </div>
-
           {/* Tee club patterns */}
           {teeRows.length > 0 && (
             <div style={{ marginBottom: 10 }}>
@@ -1810,7 +1814,6 @@ export default function App() {
               </div>
             </div>
           )}
-
           {/* Approach club patterns */}
           {apprRows.length > 0 && (
             <div>
@@ -1826,14 +1829,12 @@ export default function App() {
               </div>
             </div>
           )}
-
           {teeRows.length === 0 && apprRows.length === 0 && (
             <div style={{ color: T3, fontSize: 11, fontStyle: "italic" }}>Log club selections to see patterns here</div>
           )}
         </div>
       );
     }
-
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
@@ -1854,7 +1855,6 @@ export default function App() {
             </div>
           </div>
         </div>
-
         {/* PAR TYPE ANALYSIS */}
         {(() => {
           const r20 = last(20);
@@ -1873,7 +1873,6 @@ export default function App() {
               avgPutts:  parseFloat((hd.reduce((s,h)=>s+(h.putts||2),0)/hd.length).toFixed(1)),
             };
           }).filter(d => d.n > 0);
-
           // Score after bogey
           const bogeyFollowData = r20.flatMap(r => {
             if (!r.holes) return [];
@@ -1894,7 +1893,6 @@ export default function App() {
             const d = r20.flatMap(r => { if (!r.holes) return []; const res = []; for (let i=0;i<r.holes.length-1;i++) if (r.holes[i].score<r.holes[i].par) res.push(r.holes[i+1].score-r.holes[i+1].par); return res; });
             return d.length ? parseFloat((d.reduce((a,b)=>a+b,0)/d.length).toFixed(2)) : null;
           })();
-
           // Front vs Back 9
           const fbData = [
             { label: "Front 9", holes: [1,2,3,4,5,6,7,8,9], par: FRONT_PAR },
@@ -1907,9 +1905,7 @@ export default function App() {
             const avgPutts = hd.length ? parseFloat((hd.reduce((s,h)=>s+(h.putts||2),0)/hd.length).toFixed(1)) : 2;
             return { ...nine, avgScore, avgPM: parseFloat((avgScore - nine.par).toFixed(1)), girPct, avgPutts };
           });
-
           const pmC = pm => pm < 0 ? GN : pm < 0.3 ? TL : pm < 0.8 ? GL : pm < 1.5 ? OR : RD;
-
           return (
             <div style={{ display: "flex", flexDirection: "column", gap: 14, marginBottom: 14 }}>
               {/* Par type analysis */}
