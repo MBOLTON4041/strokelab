@@ -127,7 +127,7 @@ function emptyHoles() {
     fir: h.p >= 4 ? null : undefined,           // legacy boolean kept for back-compat
     teeResult: null,                             // "fairway"|"rough"|"bunker"|"trees"|"penalty"
     firMiss: null, teeClub: null,
-    gir: false, greenHit: null, prox: 20, distToHole: null, approachClub: null,
+    gir: false, greenHit: null, blocked: false, prox: 20, distToHole: null, approachClub: null,
     apprDist: null,                              // distance approach was hit FROM (m)
     lie: null,                                   // "fairway"|"lightRough"|"heavyRough"|"fairwayBunker"
     missDir: null, udAtt: false, udMade: false, udType: null, // "chip" | "bunker"
@@ -140,6 +140,37 @@ function emptyHoles() {
     decision: null,                              // "good" | "bad" process flag
     notes: ""
   }));
+}
+// Normalize a field that may be a single value (legacy), null, or an array
+function asArr(x) { return Array.isArray(x) ? x : (x == null || x === "" ? [] : [x]); }
+// Toggle a value in a multi-select, enforcing mutual-exclusion groups + an optional "solo" value
+function toggleMulti(cur, val, groups, solo) {
+  let arr = asArr(cur);
+  const has = arr.includes(val);
+  if (has) return arr.filter(v => v !== val);
+  if (solo && val === solo) return [val];                 // selecting solo clears the rest
+  arr = arr.filter(v => v !== solo);                      // any non-solo pick clears solo
+  const grp = (groups || []).find(g => g.includes(val));  // drop the opposite within this axis
+  if (grp) arr = arr.filter(v => !grp.includes(v));
+  return [...arr, val];
+}
+// Structured game-plan: stored as a labelled string (Tee:/Avoid:/Approach:/Green:) for back-compat with displays
+const PLAN_FIELDS = [["tee","Tee"],["avoid","Avoid"],["approach","Approach"],["green","Green"]];
+function parsePlan(s) {
+  s = s || "";
+  const out = { tee:"", avoid:"", approach:"", green:"" };
+  const hasLabel = /(?:^|\n)\s*(Tee|Avoid|Approach|Green)\s*:/i.test(s);
+  if (!hasLabel) { out.tee = s.trim(); return out; }   // legacy free-text -> Tee line
+  PLAN_FIELDS.forEach(([k,lab]) => {
+    const re = new RegExp(lab + "\\s*:\\s*([\\s\\S]*?)(?=(?:\\n\\s*(?:Tee|Avoid|Approach|Green)\\s*:)|$)", "i");
+    const m = s.match(re);
+    if (m) out[k] = m[1].trim();
+  });
+  return out;
+}
+function composePlan(p) {
+  if (!p.tee && !p.avoid && !p.approach && !p.green) return "";
+  return PLAN_FIELDS.map(([k,lab]) => lab + ": " + (p[k] || "")).join("\n");
 }
 function emptyRound() {
   return {
@@ -339,6 +370,23 @@ export default function App() {
       ...prev,
       [k]: { ...(prev[k] || {}), [holeNum]: text }
     }));
+  };
+  // Structured 4-line plan editor (Tee / Avoid / Approach / Green). Called inline (not as a component) so text inputs keep focus.
+  const planFields = (course, holeNum, compact) => {
+    const p = parsePlan(getHolePlan(course, holeNum));
+    const set = (key, val) => setHolePlan(course, holeNum, composePlan({ ...p, [key]: val }));
+    const ph = { tee: "club + aim line", avoid: "dead side / hazard", approach: "pin plan, ideal miss", green: "slope / where to leave it" };
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {PLAN_FIELDS.map(([key, label]) => (
+          <div key={key} style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+            <span style={{ width: 62, flexShrink: 0, fontSize: 11, fontWeight: 800, color: BL, textTransform: "uppercase", letterSpacing: "0.04em", paddingTop: 9 }}>{label}</span>
+            <textarea value={p[key]} onChange={e => set(key, e.target.value)} rows={compact ? 1 : 2} placeholder={ph[key]}
+              style={{ flex: 1, minWidth: 0, background: CARD, border: "1px solid " + BD, borderRadius: 7, padding: "8px 10px", fontSize: 14, color: T1, fontFamily: "inherit", resize: "vertical", lineHeight: 1.4 }} />
+          </div>
+        ))}
+      </div>
+    );
   };
   const [practiceForm, setPracticeForm] = useState({ date: new Date().toISOString().split("T")[0], area: "Putting", drill: "", duration: 30, notes: "", made: null, att: null });
   const [roundTargets] = useState({ girMin: 11, puttsMax: 30, firMin: 8, hazMax: 1 });
@@ -725,7 +773,7 @@ export default function App() {
       const firHit = (h) => h.teeResult ? h.teeResult==="fairway" : h.fir===true;
       const teeH = hs.filter(h => h.par>=4 && (h.teeResult!=null || h.fir!=null));
       const firPct = teeH.length ? Math.round(teeH.filter(firHit).length/teeH.length*100) : null;
-      const greenH = hs.filter(h => (h.greenHit==null?h.gir:h.greenHit)!=null);
+      const greenH = hs.filter(h => !h.blocked && (h.greenHit==null?h.gir:h.greenHit)!=null);
       const ghPct = greenH.length ? Math.round(greenH.filter(h => (h.greenHit==null?h.gir:h.greenHit)===true).length/greenH.length*100) : null;
       // miss patterns
       const missCount = { L:0, R:0, S:0, Lg:0 };
@@ -765,12 +813,7 @@ export default function App() {
               <div style={{ padding: "12px 14px" }}>
                 {/* THE PLAN (same store as entry) */}
                 <div style={lblS}>Plan (shows on entry)</div>
-                <textarea
-                  value={getHolePlan(course, ch.h)}
-                  onChange={e => setHolePlan(course, ch.h, e.target.value)}
-                  placeholder={"Tee: club + aim line\nAvoid: dead side / hazard\nApproach: pin plan, ideal miss"}
-                  rows={3}
-                  style={{ width: "100%", background: "#eef4ff", border: "1px solid " + BL, borderRadius: 8, padding: "9px 11px", fontSize: 14, color: T1, fontFamily: "inherit", resize: "vertical", lineHeight: 1.45, marginTop: 4 }} />
+                <div style={{ marginTop: 4 }}>{planFields(course, ch.h, false)}</div>
                 {/* ACCUMULATED KNOWLEDGE */}
                 {st.n ? (
                   <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 8 }}>
@@ -886,10 +929,8 @@ export default function App() {
       );
     }
     const CLUB_OPTS = ["Driver","Mini","4 Wood","Hybrid","2 Iron","4 Iron","5 Iron","6 Iron","7 Iron","8 Iron","9 Iron","PW","SW","LW"];
-
     return (
       <div style={{ maxWidth: 480, margin: "0 auto", padding: "0 0 80px" }}>
-
         {/* Round header */}
         <div style={{ background: CARD, borderRadius: 12, padding: "14px 16px", marginBottom: 12, border: "1px solid " + BD }}>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
@@ -932,7 +973,6 @@ export default function App() {
             </button>
           </div>
         </div>
-
         {/* Progress dots */}
         <div style={{ display: "flex", gap: 4, marginBottom: 12, padding: "0 4px" }}>
           {form.holes.map((_, i) => (
@@ -942,10 +982,8 @@ export default function App() {
                 opacity: i === holeIdx ? 1 : 0.5 }} />
           ))}
         </div>
-
         {/* HOLE CARD */}
         <div style={{ background: CARD, borderRadius: 16, border: "1px solid " + BD, overflow: "hidden", marginBottom: 12 }}>
-
           <div style={{ background: holeIdx < 9 ? NAVY : NAVY2, padding: "16px 20px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <div>
               <div style={{ fontSize: 13, color: "rgba(255,255,255,0.6)", textTransform: "uppercase", letterSpacing: "0.08em" }}>Hole</div>
@@ -962,9 +1000,7 @@ export default function App() {
               </div>
             </div>
           </div>
-
           <div style={{ padding: "14px 16px 20px", display: "flex", flexDirection: "column", gap: 16 }}>
-
             {/* GAME PLAN - persistent per course+hole, read-first */}
             <div style={{ background: "#eef4ff", border: "1px solid " + BL, borderRadius: 10, padding: "10px 12px" }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
@@ -973,23 +1009,16 @@ export default function App() {
                 </span>
                 {!form.course && <span style={{ fontSize: 10, color: T3 }}>set course to save</span>}
               </div>
-              <textarea
-                value={getHolePlan(form.course, h.hole)}
-                onChange={e => setHolePlan(form.course, h.hole, e.target.value)}
-                placeholder={"Tee: club + aim line\nAvoid: dead side / hazard\nApproach: pin plan, ideal miss"}
-                rows={3}
-                style={{ width: "100%", background: CARD, border: "1px solid " + BD, borderRadius: 8, padding: "9px 11px", fontSize: 14, color: T1, fontFamily: "inherit", resize: "vertical", lineHeight: 1.45 }} />
+              {planFields(form.course, h.hole, true)}
               <div style={{ fontSize: 10, color: T3, marginTop: 4, fontStyle: "italic" }}>
                 Saved for this course - shows every time you play this hole. Refine it now while it is fresh.
               </div>
             </div>
-
             {/* Quick regulation par */}
             <button onClick={fillRegPar}
               style={{ background: GNL, color: GN, border: "1px solid " + GN, borderRadius: 10, padding: "10px 0", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
               Quick Fill: Regulation Par (then edit anything that differs)
             </button>
-
             {/* Score + Putts */}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
               <div>
@@ -1007,7 +1036,6 @@ export default function App() {
                 }} color={h.putts >= 3 ? RD : h.putts === 1 ? GN : T1} />
               </div>
             </div>
-
             {/* First putt distance - ALWAYS */}
             <div>
               <div style={lblStyle}>First Putt Distance (m)</div>
@@ -1021,30 +1049,35 @@ export default function App() {
                   </button>
                 ))}
               </div>
-              <div style={{ ...lblStyle, marginTop: 12 }}>First Putt Break</div>
+              <div style={{ ...lblStyle, marginTop: 12 }}>First Putt Break <span style={{ color: T3, fontWeight: 400 }}>(combine slope + side, e.g. uphill + L to R)</span></div>
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                {[["LtoR","L to R"],["RtoL","R to L"],["uphill","Uphill"],["downhill","Downhill"],["double","Double"]].map(([v,label]) => (
-                  <button key={v} onClick={() => sh(gi,"puttBreak", h.puttBreak === v ? null : v)}
+                {[["LtoR","L to R"],["RtoL","R to L"],["uphill","Uphill"],["downhill","Downhill"],["double","Double"]].map(([v,label]) => {
+                  const on = asArr(h.puttBreak).includes(v);
+                  return (
+                  <button key={v} onClick={() => sh(gi,"puttBreak", toggleMulti(h.puttBreak, v, [["LtoR","RtoL"],["uphill","downhill"]]))}
                     style={{ ...btnBase, flex: "1 1 30%", padding: "8px 0", fontSize: 12,
-                      background: h.puttBreak === v ? PU : C2, color: h.puttBreak === v ? WHT : T2,
-                      borderColor: h.puttBreak === v ? PU : BD }}>
+                      background: on ? PU : C2, color: on ? WHT : T2,
+                      borderColor: on ? PU : BD }}>
                     {label}
                   </button>
-                ))}
+                  );
+                })}
               </div>
-              <div style={{ ...lblStyle, marginTop: 12 }}>First Putt Result (line/pace diagnostic)</div>
+              <div style={{ ...lblStyle, marginTop: 12 }}>First Putt Result <span style={{ color: T3, fontWeight: 400 }}>(pace + line, e.g. short + left)</span></div>
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                {[["made","Holed",GN],["short","Short",RD],["long","Long",OR],["left","Left",BL],["right","Right",TL]].map(([v,label,c]) => (
-                  <button key={v} onClick={() => sh(gi,"puttMiss", h.puttMiss === v ? null : v)}
+                {[["made","Holed",GN],["short","Short",RD],["long","Long",OR],["left","Left",BL],["right","Right",TL]].map(([v,label,c]) => {
+                  const on = asArr(h.puttMiss).includes(v);
+                  return (
+                  <button key={v} onClick={() => sh(gi,"puttMiss", toggleMulti(h.puttMiss, v, [["short","long"],["left","right"]], "made"))}
                     style={{ ...btnBase, flex: "1 1 18%", padding: "8px 0", fontSize: 12,
-                      background: h.puttMiss === v ? c : C2, color: h.puttMiss === v ? WHT : T2,
-                      borderColor: h.puttMiss === v ? c : BD }}>
+                      background: on ? c : C2, color: on ? WHT : T2,
+                      borderColor: on ? c : BD }}>
                     {label}
                   </button>
-                ))}
+                  );
+                })}
               </div>
             </div>
-
             {/* TEE RESULT - par 4/5 only */}
             {par >= 4 && (
               <div>
@@ -1069,7 +1102,6 @@ export default function App() {
                 </div>
               </div>
             )}
-
             {/* APPROACH: distance + lie + club */}
             <div>
               <div style={lblStyle}>Approach Distance (m from)</div>
@@ -1101,7 +1133,6 @@ export default function App() {
                 </select>
               </div>
             </div>
-
             {/* GIR (auto, in-regulation) */}
             <div>
               <div style={lblStyle}>Green in Regulation {((h.score - h.putts) <= (par - 2)) === h.gir ? "(auto)" : ""}</div>
@@ -1117,26 +1148,25 @@ export default function App() {
                 })}
               </div>
             </div>
-
             {/* Approach hit green (approach skill, decoupled from driving/regulation) */}
             <div>
-              <div style={lblStyle}>Approach Hit Green? (any stroke)</div>
+              <div style={lblStyle}>Approach Result (vs the green)</div>
               <div style={{ display: "flex", gap: 6 }}>
-                {[["Y","Hit Green",GN],["N","Missed",RD]].map(([v,label,c]) => {
+                {[["Y","Hit Green",GN],["N","Missed",RD],["B","Blocked Out",PU]].map(([v,label,c]) => {
                   const gh = h.greenHit == null ? h.gir : h.greenHit;
-                  const isActive = (gh === true && v === "Y") || (gh === false && v === "N");
+                  const isActive = h.blocked ? v === "B" : ((gh === true && v === "Y") || (gh === false && v === "N"));
                   return (
-                    <button key={v} onClick={() => sh(gi,"greenHit", v === "Y")}
-                      style={{ ...btnBase, background: isActive ? c : C2, color: isActive ? WHT : T2, borderColor: isActive ? c : BD }}>
+                    <button key={v} onClick={() => { if (v === "B") { sh(gi,"blocked",true); sh(gi,"greenHit",false); } else { sh(gi,"blocked",false); sh(gi,"greenHit", v === "Y"); } }}
+                      style={{ ...btnBase, fontSize: 13, background: isActive ? c : C2, color: isActive ? WHT : T2, borderColor: isActive ? c : BD }}>
                       {label}
                     </button>
                   );
                 })}
               </div>
+              {h.blocked && <div style={{ fontSize: 10, color: T3, marginTop: 5, fontStyle: "italic" }}>Blocked out - no shot at the green. Excluded from approach greens-hit so a bad drive does not score against your iron play.</div>}
             </div>
-
             {/* Proximity if approach found green */}
-            {(h.greenHit == null ? h.gir : h.greenHit) === true && (
+            {!h.blocked && (h.greenHit == null ? h.gir : h.greenHit) === true && (
               <div>
                 <div style={lblStyle}>Proximity to Pin (m)</div>
                 <input type="number" value={h.prox || ""} onChange={e => { const v = parseInt(e.target.value)||null; sh(gi,"prox",v); if(v) sh(gi,"puttDist",v); }}
@@ -1144,15 +1174,16 @@ export default function App() {
                   style={{ width: "100%", background: C2, border: "1px solid " + BD, borderRadius: 8, padding: "12px 14px", fontSize: 16, color: T1, fontFamily: "monospace" }} />
               </div>
             )}
-
-            {/* Miss + U&D + chip/bunker proximity if approach missed green */}
+            {/* Miss + U&D + chip/bunker proximity if approach missed green (incl. blocked recovery) */}
             {(h.greenHit == null ? h.gir : h.greenHit) === false && (
               <div>
+                {!h.blocked && <>
                 <div style={lblStyle}>Miss Direction</div>
                 <Seg value={h.missDir} onChange={v => sh(gi,"missDir",v)} activeColor={OR}
                   opts={[["L","Left"],["R","Right"],["S","Short"],["Lg","Long"]]} />
-                <div style={{ marginTop: 10 }}>
-                  <div style={lblStyle}>Up & Down</div>
+                </>}
+                <div style={{ marginTop: h.blocked ? 0 : 10 }}>
+                  <div style={lblStyle}>Up & Down{h.blocked ? " (after recovery)" : ""}</div>
                   <div style={{ display: "flex", gap: 6 }}>
                     {[["chip","Chip",GL],["bunker","Bunker",OR]].map(([v,label,c]) => (
                       <button key={v} onClick={() => { sh(gi,"udType", h.udType === v ? null : v); sh(gi,"udAtt", h.udType !== v); }}
@@ -1182,7 +1213,6 @@ export default function App() {
                 </div>
               </div>
             )}
-
             {/* Hazard */}
             <div>
               <div style={lblStyle}>Hazard / Penalty</div>
@@ -1200,7 +1230,6 @@ export default function App() {
                 )}
               </div>
             </div>
-
             {/* Decision quality */}
             <div>
               <div style={lblStyle}>Decision Quality (process, not outcome)</div>
@@ -1215,7 +1244,6 @@ export default function App() {
                 </button>
               </div>
             </div>
-
             {/* Hole notes */}
             <div>
               <div style={lblStyle}>Notes</div>
@@ -1223,10 +1251,8 @@ export default function App() {
                 placeholder="Decisions, shots, conditions..." rows={2}
                 style={{ width: "100%", background: "#fffef5", border: "1px solid " + BD, borderRadius: 8, padding: "10px 12px", fontSize: 14, color: T1, fontFamily: "inherit", resize: "none" }} />
             </div>
-
           </div>
         </div>
-
         {/* Navigation */}
         <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
           <button onClick={() => setHoleIdx(Math.max(0, holeIdx - 1))} disabled={holeIdx === 0}
@@ -1241,7 +1267,6 @@ export default function App() {
             {holeIdx < 17 ? `H${holeIdx + 2}` : ""}{" >"}
           </button>
         </div>
-
         {/* Conditions + Save */}
         <div style={{ background: CARD, borderRadius: 12, padding: 16, border: "1px solid " + BD, marginBottom: 12 }}>
           <div style={lblStyle}>Round Conditions</div>
@@ -1268,17 +1293,14 @@ export default function App() {
             Save Round
           </button>
         </div>
-
       </div>
     );
   }
-
   function SGTab() {
     const [activeSG,  setActiveSG]  = useState(null);      // null = all
     const [sgView,    setSgView]    = useState("radar");    // "radar" | "trend"
     const [sgWindow,  setSgWindow]  = useState(10);         // 1=last, 3, 5, 10, 20, 0=all
     if (!rSG.length) return <div style={{ color: T3, padding: 40, textAlign: "center" }}>No rounds yet.</div>;
-
     // Window helpers
     const WINDOWS = SG_WINDOWS;
     const windowRounds = sgWindow === 0 ? rSG : rSG.slice(-Math.min(sgWindow, rSG.length));
@@ -1286,16 +1308,13 @@ export default function App() {
       const vals = windowRounds.map(r => parseFloat(r[key])).filter(v => !isNaN(v));
       return vals.length ? parseFloat((vals.reduce((a,b)=>a+b,0)/vals.length).toFixed(2)) : null;
     };
-
     // Drill-down: find selected round if any
     const drillRound = selectedRound ? rSG.find(r => r.id === selectedRound) : null;
-
     // When drilling a single round, ignore the window
     const effWindow  = drillRound ? 1 : sgWindow;
     const windowLabel = drillRound
       ? drillRound.date + " -- " + (drillRound.course || "Round")
       : (WINDOWS.find(w => w.n === sgWindow) || { label: "Last 10" }).label;
-
     const SG_SERIES = [
       { key: "sgOTT",   label: "SG: Tee",      color: BL, avg: drillRound ? drillRound.sgOTT   : sgAvg("sgOTT")   },
       { key: "sgApp",   label: "SG: Approach",  color: GN, avg: drillRound ? drillRound.sgApp   : sgAvg("sgApp")   },
@@ -1303,21 +1322,17 @@ export default function App() {
       { key: "sgPutt",  label: "SG: Putting",   color: GL, avg: drillRound ? drillRound.sgPutt  : sgAvg("sgPutt")  },
       { key: "sgTotal", label: "SG: Total",     color: TL, avg: drillRound ? drillRound.sgTotal : sgAvg("sgTotal") },
     ];
-
     // For radar, map short keys back
     const SG_RADAR_KEY = { sgOTT: "OTT", sgApp: "App", sgATG: "ATG", sgPutt: "Putt", sgTotal: "Tot" };
-
     const sgTrend = last(20).map(r => ({ date: (r.date||"").slice(5), OTT: r.sgOTT, App: r.sgApp, ATG: r.sgATG, Putt: r.sgPutt, Tot: r.sgTotal, id: r.id }));
     const activeSeries = activeSG ? SG_SERIES.filter(s => s.key === activeSG) : SG_SERIES;
     const activeData   = activeSG
       ? sgTrend.map(r => ({ date: r.date, [SG_RADAR_KEY[activeSG]]: r[SG_RADAR_KEY[activeSG]], id: r.id }))
       : sgTrend;
-
     const vals = activeSeries.flatMap(s => sgTrend.map(r => r[SG_RADAR_KEY[s.key]])).filter(v => v != null);
     const yMin = vals.length ? Math.floor(Math.min(...vals) * 10) / 10 - 0.2 : -1.5;
     const yMax = vals.length ? Math.ceil(Math.max(...vals)  * 10) / 10 + 0.2 :  1.5;
     const activeSer = activeSG ? SG_SERIES.find(s => s.key === activeSG) : null;
-
     // Comparison: compute SG avg for each window period side by side
     const CMP_WINDOWS = [3, 5, 10, 20, 0];
     const cmpData = SG_SERIES.filter(s => s.key !== "sgTotal").map(s => {
@@ -1329,13 +1344,10 @@ export default function App() {
       });
       return row;
     });
-
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-
         {/* Window selector + KPI cards row */}
         <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
-
           {/* Window toggle column */}
           <div style={{ display: "flex", flexDirection: "column", gap: 6, flexShrink: 0 }}>
             <div style={{ fontSize: 10, color: T3, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 2 }}>Period</div>
@@ -1353,7 +1365,6 @@ export default function App() {
               </button>
             )}
           </div>
-
           {/* KPI cards */}
           <div style={{ flex: 1, display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 10 }}>
             {SG_SERIES.map(({ key, label, color, avg }) => {
@@ -1373,7 +1384,6 @@ export default function App() {
             })}
           </div>
         </div>
-
         {/* Period comparison table */}
         <Box style={{ padding: "14px 16px" }}>
           <Lbl t="Period Comparison -- SG Avg by Window" />
@@ -1433,7 +1443,6 @@ export default function App() {
             </tbody>
           </table>
         </Box>
-
         {/* View switcher */}
         <div style={{ display: "flex", gap: 8, marginBottom: 2 }}>
           {[["radar","Spider Chart"],["trend","Trend Lines"]].map(([v,lbl]) => (
@@ -1443,7 +1452,6 @@ export default function App() {
             </button>
           ))}
         </div>
-
         {/* RADAR CHART */}
         {sgView === "radar" && s10 && (
           <Box style={{ padding: "20px 24px" }}>
@@ -1456,9 +1464,7 @@ export default function App() {
                 {drillRound ? "Blue = this round  |  Teal dashed = 10r avg  |  Amber dashed = +2 target" : "Blue filled = your " + WINDOWS.find(w => w.n === sgWindow).label + " average  |  Amber dashed = +2 target  |  Larger area = better"}
               </div>
             </div>
-
             <div style={{ display: "grid", gridTemplateColumns: "1fr 300px", gap: 24, alignItems: "start" }}>
-
               {/* Radar chart -- simple and robust */}
               {(() => {
                 const P2    = { sgOTT: 0.18, sgApp: 0.32, sgATG: 0.12, sgPutt: 0.10 };
@@ -1474,7 +1480,6 @@ export default function App() {
                 };
                 const getAvg = key => parseFloat(sgAvg(key)) || 0;
                 const norm = v => Math.min(100, Math.max(0, (v + 1.5) / 3 * 100));
-
                 const data = CATS.map(c => ({
                   subject: c.label,
                   You:    parseFloat(norm(getVal(c.key)).toFixed(1)),
@@ -1484,7 +1489,6 @@ export default function App() {
                   rawAvg: getAvg(c.key),
                   p2:     c.p2,
                 }));
-
                 return (
                   <ResponsiveContainer width="100%" height={420}>
                     <RadarChart data={data} margin={{ top: 30, right: 50, bottom: 30, left: 50 }}>
@@ -1523,7 +1527,6 @@ export default function App() {
                   </ResponsiveContainer>
                 );
               })()}
-
               {/* Stat cards */}
               <div style={{ display: "flex", flexDirection: "column", gap: 10, paddingTop: 20 }}>
                 {[
@@ -1574,11 +1577,9 @@ export default function App() {
                   <div style={{ fontSize: 11, color: T2, marginTop: 4 }}>{WINDOWS.find(w => w.n === sgWindow).label}</div>
                 </div>
               </div>
-
             </div>
           </Box>
         )}
-
         {/* Chart */}
         {sgView === "trend" && <Box>
           {drillRound && (
@@ -1609,7 +1610,6 @@ export default function App() {
               ))}
             </div>
           </div>
-
           <ResponsiveContainer width="100%" height={240}>
             <LineChart data={activeData} margin={{ top: 8, right: 12, left: -15, bottom: 0 }}>
               <CartesianGrid stroke={BD} strokeDasharray="3 3" />
@@ -1634,7 +1634,6 @@ export default function App() {
               })}
             </LineChart>
           </ResponsiveContainer>
-
           {/* Round-by-round values table when isolated */}
           {activeSG && activeSer && (
             <div style={{ marginTop: 14, borderTop: "1px solid " + BD, paddingTop: 12 }}>
@@ -1657,11 +1656,9 @@ export default function App() {
           )}
         </Box>
         }
-
       </div>
     );
   }
-
   // -- HOLE ANALYSIS --
   function HoleAnalysis() {
     if (!rSG.length) return <div style={{ color: T3, padding: 40, textAlign: "center" }}>No rounds yet.</div>;
@@ -1669,7 +1666,6 @@ export default function App() {
     const _hcCount = {};
     r20.forEach(r => { if (r.course) _hcCount[r.course] = (_hcCount[r.course]||0)+1; });
     const homeCourse = Object.keys(_hcCount).sort((a,b)=>_hcCount[b]-_hcCount[a])[0] || "";
-
     const holeData = HOLES.map(ch => {
       const hd = r20.map(r => r.holes && r.holes.find(h => h.hole === ch.h)).filter(Boolean);
       if (!hd.length) return { hole: ch.h, par: ch.p, n: 0, avgScore: ch.p, pm: 0, girPct: 0, avgPutts: 2, avgProx: 0, scrPct: 0, hazardPct: 0, firPct: null, avgDist: 0, clubs: {}, missDirs: {} };
@@ -1725,17 +1721,14 @@ export default function App() {
         hazardPct2: hd.filter(h=>h.hazard).length,
       };
     });
-
     const sorted = [...holeData].filter(h => h.n >= 1).sort((a,b) => b.pm - a.pm);
     const worst6 = sorted.slice(0, 6);
     const best6  = sorted.slice(-6).reverse();
-
     function HoleCard({ h, type }) {
       const isWeak = type === "weak";
       const bg     = isWeak ? RDL : GNL;
       const border = isWeak ? RD  : GN;
       const tc     = isWeak ? RD  : GN;
-
       // Build tee club rows: "Driver (8x): L x4, R x1, HIT x3"
       const teeRows = Object.entries(h.teeMap || {})
         .sort((a,b) => b[1].total - a[1].total)
@@ -1747,7 +1740,6 @@ export default function App() {
           if (d.hit) parts.push("FIR x" + d.hit);
           return { club, total: d.total, detail: parts.join(", ") || "No miss recorded" };
         });
-
       // Build approach club rows: "8i (6x): Miss Right x3 (incl 2 bunker), GIR x3"
       const apprRows = Object.entries(h.apprMap || {})
         .sort((a,b) => b[1].total - a[1].total)
@@ -1763,14 +1755,12 @@ export default function App() {
           const detail  = [girStr, missStr].filter(Boolean).join(" | ") || "No data";
           return { club, total: d.total, detail };
         });
-
       const stat = (label, val, col) => (
         <div style={{ background: "rgba(255,255,255,0.65)", borderRadius: 5, padding: "5px 8px" }}>
           <div style={{ color: T3, fontSize: 9, fontWeight: 700, textTransform: "uppercase" }}>{label}</div>
           <div style={{ color: col, fontWeight: 700, fontFamily: "monospace", fontSize: 12 }}>{val}</div>
         </div>
       );
-
       return (
         <div style={{ background: bg, border: "1px solid " + border, borderRadius: 8, padding: "12px 14px" }}>
           {/* Header */}
@@ -2912,7 +2902,7 @@ export default function App() {
 
           {/* ===== APPROACH DISTANCE-CONTROL BIAS (short vs long) ===== */}
           {(() => {
-            const miss = allHoles.filter(h => h.approachClub && (h.greenHit == null ? h.gir : h.greenHit) === false && h.missDir);
+            const miss = allHoles.filter(h => h.approachClub && !h.blocked && (h.greenHit == null ? h.gir : h.greenHit) === false && h.missDir);
             const c = { S:0, Lg:0, L:0, R:0 };
             miss.forEach(h => { const k = h.missDir === "Sh" ? "S" : h.missDir; if (c[k]!=null) c[k]++; });
             const tot = c.S + c.Lg + c.L + c.R;
@@ -2951,7 +2941,7 @@ export default function App() {
           {(() => {
             const m = {};
             allHoles.forEach(h => {
-              if (!h.approachClub) return;
+              if (!h.approachClub || h.blocked) return;
               if (!m[h.approachClub]) m[h.approachClub] = { att: 0, green: 0, L: 0, R: 0, Sh: 0, Lg: 0, proxArr: [] };
               const c = m[h.approachClub];
               c.att++;
@@ -3327,7 +3317,7 @@ export default function App() {
     const rounds = win === 0 ? rSG : rSG.slice(-win);
     const ph = rounds.flatMap(r => (r.holes || []).filter(h => h.puttDist != null));
     const allH = rounds.flatMap(r => r.holes || []);
-    const holed = (h) => h.puttMiss === "made" || h.putts === 1;
+    const holed = (h) => asArr(h.puttMiss).includes("made") || h.putts === 1;
 
     // Headline metrics
     const totalPutts = rounds.reduce((s,r) => s + (r.totalPutts || 0), 0);
@@ -3350,19 +3340,23 @@ export default function App() {
     // Make % by break / shape
     const breaks = [["RtoL","R to L",PU],["LtoR","L to R",BL],["uphill","Uphill",GN],["downhill","Downhill",RD],["double","Double",OR]];
     const breakRows = breaks.map(([v,label,c]) => {
-      const hs = ph.filter(h => h.puttBreak === v);
+      const hs = ph.filter(h => asArr(h.puttBreak).includes(v));
       const made = hs.filter(holed).length;
       return { label, c, n: hs.length, pct: hs.length ? Math.round(made/hs.length*100) : null };
     }).filter(r => r.n > 0);
 
-    // MISS DIAGNOSTIC (pace vs line) - the short/online metric
-    const missH = ph.filter(h => h.puttMiss && h.puttMiss !== "made");
+    // MISS DIAGNOSTIC (pace vs line) - the short/online metric. puttMiss is now multi (e.g. short+left)
+    const missH = ph.filter(h => { const a = asArr(h.puttMiss); return a.length && !a.includes("made"); });
     const mc = { short:0, long:0, left:0, right:0 };
-    missH.forEach(h => { if (mc[h.puttMiss] != null) mc[h.puttMiss]++; });
-    const missTotal = mc.short + mc.long + mc.left + mc.right;
-    const paceMiss = mc.short + mc.long;
-    const lineMiss = mc.left + mc.right;
+    missH.forEach(h => { asArr(h.puttMiss).forEach(v => { if (mc[v] != null) mc[v]++; }); });
+    const missTotal = missH.length;                  // count of missed putts (a putt may carry 2 tags)
     const shortPct = missTotal ? Math.round(mc.short / missTotal * 100) : 0;
+    // Pace axis = any short/long tag; Line axis = any left/right tag
+    const paceMiss = missH.filter(h => { const a = asArr(h.puttMiss); return a.includes("short") || a.includes("long"); }).length;
+    const lineMiss = missH.filter(h => { const a = asArr(h.puttMiss); return a.includes("left") || a.includes("right"); }).length;
+    // Pure pace: short with NO side miss = on-line but under-hit (the firmer-putter signal)
+    const shortOnline = missH.filter(h => { const a = asArr(h.puttMiss); return a.includes("short") && !a.includes("left") && !a.includes("right"); }).length;
+    const shortOnlinePct = missTotal ? Math.round(shortOnline / missTotal * 100) : 0;
 
     // 3-putts by first-putt distance
     const tpBands = [[0,3,"<3m"],[3,6,"3-6m"],[6,10,"6-10m"],[10,99,"10m+"]];
@@ -3435,14 +3429,23 @@ export default function App() {
               </div>
               <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
                 <div style={{ flex: 1, background: "rgba(255,255,255,0.1)", borderRadius: 8, padding: "8px 10px" }}>
-                  <div style={{ fontSize: 10, color: "rgba(255,255,255,0.7)" }}>PACE MISSES (short+long)</div>
+                  <div style={{ fontSize: 10, color: "rgba(255,255,255,0.7)" }}>PACE MISSES (short/long)</div>
                   <div style={{ fontFamily: "monospace", fontSize: 18, fontWeight: 800 }}>{missTotal?Math.round(paceMiss/missTotal*100):0}%</div>
                 </div>
                 <div style={{ flex: 1, background: "rgba(255,255,255,0.1)", borderRadius: 8, padding: "8px 10px" }}>
-                  <div style={{ fontSize: 10, color: "rgba(255,255,255,0.7)" }}>LINE MISSES (left+right)</div>
+                  <div style={{ fontSize: 10, color: "rgba(255,255,255,0.7)" }}>LINE MISSES (left/right)</div>
                   <div style={{ fontFamily: "monospace", fontSize: 18, fontWeight: 800 }}>{missTotal?Math.round(lineMiss/missTotal*100):0}%</div>
                 </div>
+                <div style={{ flex: 1, background: "rgba(126,224,160,0.16)", borderRadius: 8, padding: "8px 10px", border: "1px solid rgba(126,224,160,0.4)" }}>
+                  <div style={{ fontSize: 10, color: "rgba(255,255,255,0.85)" }}>SHORT &amp; ON-LINE</div>
+                  <div style={{ fontFamily: "monospace", fontSize: 18, fontWeight: 800, color: "#7ee0a0" }}>{shortOnlinePct}%</div>
+                </div>
               </div>
+              {shortOnlinePct >= 30 && (
+                <div style={{ marginTop: 12, padding: "9px 11px", background: "rgba(255,255,255,0.1)", borderRadius: 8, fontSize: 11, color: "rgba(255,255,255,0.9)", lineHeight: 1.5 }}>
+                  {shortOnlinePct}% of misses are short on a good line -- pure pace, not read. This is the cleanest case for testing a firmer putter (VZN / broomstick) against the DF3: your line is fine, the ball is dying short.
+                </div>
+              )}
             </>
           )}
         </div>
