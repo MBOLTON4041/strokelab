@@ -72,12 +72,28 @@ function puttEV(ft) {
 }
 
 function calcSG(r) {
+  const M2FT = 3.281;                                  // proximity/putt distances stored in METRES
   const gir = r.girsHit / 18;
   const miss = 18 - r.girsHit;
   const fw = r.fairwaysTotal > 0 ? r.fairwaysHit / r.fairwaysTotal : 0.62;
-  const sgPutt = parseFloat((puttEV(r.avgProxFt || 25) * r.girsHit + 1.72 * miss - (r.totalPutts || 32)).toFixed(2));
+  const avgProxFt = (r.avgProxFt || 7) * M2FT;         // avgProxFt field is really metres; convert
+
+  // SG PUTTING (vs tour baseline) -- prefer per-hole first-putt distances now captured every hole
+  let sgPutt;
+  const holes = r.holes || [];
+  const puttedWithDist = holes.filter(h => h.putts > 0 && h.puttDist > 0);
+  if (puttedWithDist.length >= 6) {
+    let exp = 0, act = 0;
+    puttedWithDist.forEach(h => { exp += puttEV(h.puttDist * M2FT); act += h.putts; });
+    holes.filter(h => h.putts > 0 && !(h.puttDist > 0)).forEach(h => { exp += 1.85; act += h.putts; });
+    sgPutt = parseFloat((exp - act).toFixed(2));
+  } else {
+    const expGir = puttEV(avgProxFt) * r.girsHit;      // unit-corrected fallback
+    sgPutt = parseFloat((expGir + 1.85 * miss - (r.totalPutts || 32)).toFixed(2));
+  }
+
   const sgOTT  = parseFloat(((fw - 0.62) * (r.fairwaysTotal || 14) * 0.30 + ((r.avgDrive || 238) - 238) / 9 * 0.09).toFixed(2));
-  const proxAdj = r.girsHit > 0 ? ((22 - (r.avgProxFt || 26)) / 8) * 0.12 * r.girsHit : 0;
+  const proxAdj = r.girsHit > 0 ? ((22 - avgProxFt) / 8) * 0.12 * r.girsHit : 0;  // 22 ft baseline, now comparing ft to ft
   const sgApp  = parseFloat(((gir - 0.70) * 18 * 0.40 + proxAdj).toFixed(2));
   const att = r.udAttempts || 0;
   const sc  = att > 0 ? r.udMade / att : 0.58;
@@ -93,7 +109,7 @@ function calcHcp(rounds) {
     .sort((a, b) => a - b);
   const n = diffs.length;
   const take = n < 6 ? 1 : n < 9 ? 2 : n < 12 ? 3 : n < 15 ? 4 : n < 17 ? 5 : n < 19 ? 6 : n === 19 ? 7 : 8;
-  return parseFloat((diffs.slice(0, take).reduce((a, b) => a + b, 0) / take * 0.96).toFixed(1));
+  return parseFloat((diffs.slice(0, take).reduce((a, b) => a + b, 0) / take).toFixed(1));
 }
 
 function emptyHoles() {
