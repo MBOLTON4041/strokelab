@@ -21,7 +21,6 @@ const TEES = {
   blue:  { label: "Blue",  rating: 73.0, slope: 141, scratch: 73 },
   black: { label: "Black", rating: 75.0, slope: 143, scratch: 75 },
 };
-// Matt's bag -- carry distances in METRES
 const BAG = [
   { name: "Driver",  loft:  9,   carry: 260, tee: true,  appr: false },
   { name: "Mini",    loft: 13.5, carry: 230, tee: true,  appr: false },
@@ -41,7 +40,6 @@ const BAG = [
 ];
 function suggestClub(yards) {
   if (!yards || yards <= 0) return null;
-  // find closest carry distance, bias toward going one longer (leave full shot)
   const clubs = BAG.filter(c => c.carry > 0 && c.appr);
   let best = clubs[0]; let bestDiff = Math.abs(clubs[0].carry - yards);
   clubs.forEach(c => {
@@ -53,7 +51,6 @@ function suggestClub(yards) {
 const TEE_CLUBS  = BAG.map(c => c.name); // all clubs valid off tee (par 3s etc)
 const APPR_CLUBS = BAG.filter(c => c.appr).map(c => c.name);
 const HAZARD_OPTS = ["OB","Water","Lateral","Drop"];
-// Expected putts to hole out from distance in FEET -- SCRATCH golfer baseline
 const PUTT_EV = [[2,1.02],[3,1.12],[5,1.28],[7,1.42],[10,1.61],[15,1.76],[20,1.85],[25,1.91],[30,1.96],[40,2.04],[50,2.10],[75,2.20],[100,2.28]];
 function puttEV(ft) {
   const f = Math.max(2, ft || 25);
@@ -71,7 +68,6 @@ function calcSG(r) {
   const miss = 18 - r.girsHit;
   const fw = r.fairwaysTotal > 0 ? r.fairwaysHit / r.fairwaysTotal : 0.62;
   const avgProxFt = (r.avgProxFt || 7) * M2FT;         // avgProxFt field is really metres; convert
-  // SG PUTTING (vs SCRATCH baseline) -- prefer per-hole first-putt distances now captured every hole
   let sgPutt;
   const holes = r.holes || [];
   const puttedWithDist = holes.filter(h => h.putts > 0 && h.puttDist > 0);
@@ -98,7 +94,6 @@ function roundDiff(r) {
   if (r.score == null) return null;
   return parseFloat(((r.score - (r.rating || TOTAL_PAR)) * 113 / (r.slope || 130)).toFixed(1));
 }
-// Unified, date-sorted differential series from full rounds + seeded history
 function buildDiffSeries(rounds, hist) {
   const fromRounds = (rounds || []).map(r => ({ date: r.date || "", diff: roundDiff(r), score: r.score, isHist: false }));
   const fromHist   = (hist || []).map(h => ({ date: h.date || "", diff: (h.diff != null ? parseFloat(h.diff) : null), score: null, isHist: true, course: h.course }));
@@ -113,9 +108,7 @@ function hcpFromSeries(series) {
   const take = Math.min(8, n);                          // average of best 8 (or all available if fewer)
   return parseFloat((diffs.slice(0, take).reduce((a, b) => a + b, 0) / take).toFixed(1));
 }
-// Back-compat: handicap from full rounds only
 function calcHcp(rounds) { return hcpFromSeries(buildDiffSeries(rounds, [])); }
-// Golf display convention: index of 3.0 shows "3.0"; a plus handicap (better than scratch) shows "+2.0"
 function fmtHcp(v) {
   if (v == null) return "--";
   if (v < 0) return "+" + Math.abs(v).toFixed(1);
@@ -136,14 +129,12 @@ function emptyHoles() {
     hazard: false, hazardType: null,
     puttDist: null,                              // first putt distance in metres (every hole)
     puttBreak: null,                             // "LtoR"|"RtoL"|"uphill"|"downhill"|"double"
-    puttMiss: null,                              // first-putt miss: "short"|"long"|"left"|"right"|"made"
+    puttMiss: null,                              // first-putt result tags: "made"|"short"|"holehigh"|"long"|"left"|"right" (multi)
     decision: null,                              // "good" | "bad" process flag
     notes: ""
   }));
 }
-// Normalize a field that may be a single value (legacy), null, or an array
 function asArr(x) { return Array.isArray(x) ? x : (x == null || x === "" ? [] : [x]); }
-// Toggle a value in a multi-select, enforcing mutual-exclusion groups + an optional "solo" value
 function toggleMulti(cur, val, groups, solo) {
   let arr = asArr(cur);
   const has = arr.includes(val);
@@ -154,7 +145,6 @@ function toggleMulti(cur, val, groups, solo) {
   if (grp) arr = arr.filter(v => !grp.includes(v));
   return [...arr, val];
 }
-// Structured game-plan: stored as a labelled string (Tee:/Avoid:/Approach:/Green:) for back-compat with displays
 const PLAN_FIELDS = [["tee","Tee"],["avoid","Avoid"],["approach","Approach"],["green","Green"]];
 function parsePlan(s) {
   s = s || "";
@@ -183,7 +173,6 @@ function aggHoles(holes) {
   const missHoles = holes.filter(h => !h.gir && h.udAtt);
   const sandHoles = holes.filter(h => h.sand);
   const hazHoles  = holes.filter(h => h.hazard);
-  // Derive fairway-hit from teeResult when present, else fall back to legacy boolean
   const firHit = (h) => h.teeResult ? h.teeResult === "fairway" : h.fir === true;
   return {
     score:         holes.reduce((s, h) => s + (h.score || h.par), 0),
@@ -207,13 +196,11 @@ function aggHoles(holes) {
     avgPuttDist:   girHoles.filter(h => h.puttDist > 0).length
                      ? Math.round(girHoles.filter(h => h.puttDist > 0).reduce((s,h) => s+(h.puttDist||0), 0) / girHoles.filter(h => h.puttDist > 0).length)
                      : null,
-    // New tee-result breakdown
     teeFairway:    firHoles.filter(h => h.teeResult === "fairway").length,
     teeRough:      firHoles.filter(h => h.teeResult === "rough").length,
     teeBunker:     firHoles.filter(h => h.teeResult === "bunker").length,
     teeTrees:      firHoles.filter(h => h.teeResult === "trees").length,
     teePenalty:    firHoles.filter(h => h.teeResult === "penalty").length,
-    // Decision quality
     goodDecisions: holes.filter(h => h.decision === "good").length,
     badDecisions:  holes.filter(h => h.decision === "bad").length,
   };
@@ -222,7 +209,6 @@ function ravg(arr, k) {
   if (!arr.length) return null;
   return parseFloat((arr.reduce((s, r) => s + (parseFloat(r[k]) || 0), 0) / arr.length).toFixed(1));
 }
-// -- LIGHT THEME --
 const BG   = "#f2f5f9";
 const CARD = "#ffffff";
 const C2   = "#edf0f6";
@@ -301,7 +287,6 @@ function Btn({ label, active, onClick, ac, small }) {
   );
 }
 const TABS = [["dash","Dashboard"],["enter","+ Log Round"],["sg","Strokes Gained"],["holes","Hole Analysis"],["gameplan","Game Plan"],["clubs","Club Stats"],["putting","Putting"],["scoring","Scoring"],["trend","Trends"],["practice","Practice Log"],["insights","Insights"],["hist","Hcp Setup"]];
-// ===== Supabase cloud sync: one table 'strokelab', one row per collection (key/data/updated_at) =====
 const SUPA_URL = "https://bhysrzlmpmpdeyttvjwa.supabase.co";
 const SUPA_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJoeXNyemxtcG1wZGV5dHR2andhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEwNzYzMTUsImV4cCI6MjA5NjY1MjMxNX0.6cBkdXRrpQjhwQLRbbMoqPgOj-7TBHK6JiNvIowJ4fA";
 const SUPA_HEAD = { apikey: SUPA_KEY, Authorization: "Bearer " + SUPA_KEY, "Content-Type": "application/json" };
@@ -321,7 +306,6 @@ async function cloudPush(key, data) {
   });
   if (!r.ok) throw new Error("push " + r.status);
 }
-// Merge helpers - protect against clobbering when two devices have diverged
 function mergeRounds(local, remote) {            // union by id, keep the newer (_ts)
   const m = {};
   [...(local||[]), ...(remote||[])].forEach(r => {
@@ -331,9 +315,14 @@ function mergeRounds(local, remote) {            // union by id, keep the newer 
   });
   return Object.values(m).sort((a,b) => (a.date||"").localeCompare(b.date||""));
 }
-function mergeUnion(local, remote) {              // union arrays, dedupe by content
+function _canon(x) {                               // key-sorted clone so jsonb key reordering can't defeat dedup
+  if (Array.isArray(x)) return x.map(_canon);
+  if (x && typeof x === "object") { const o = {}; Object.keys(x).sort().forEach(k => { o[k] = _canon(x[k]); }); return o; }
+  return x;
+}
+function mergeUnion(local, remote) {              // union arrays, dedupe by content regardless of key order
   const seen = new Set(), out = [];
-  [...(local||[]), ...(remote||[])].forEach(x => { const k = JSON.stringify(x); if (!seen.has(k)) { seen.add(k); out.push(x); } });
+  [...(local||[]), ...(remote||[])].forEach(x => { const k = JSON.stringify(_canon(x)); if (!seen.has(k)) { seen.add(k); out.push(x); } });
   return out;
 }
 function mergePlans(local, remote) {              // deep merge course->hole; on conflict keep the fuller plan
@@ -372,7 +361,6 @@ export default function App() {
   const [practiceLogs, setPracticeLogs] = useState(() => {
     try { const s = localStorage.getItem("strokelab_practice"); return s ? JSON.parse(s) : []; } catch (e) { return []; }
   });
-  // Cloud sync state + debounced push (writes go to localStorage immediately, cloud shortly after)
   const [syncState, setSyncState] = useState("idle"); // idle|syncing|synced|offline
   const _pushTimers = useRef({});
   const pushCloud = (key, data) => {
@@ -382,7 +370,6 @@ export default function App() {
       cloudPush(key, data).then(() => setSyncState("synced")).catch(() => setSyncState("offline"));
     }, 700);
   };
-  // Persist to localStorage whenever data changes
   const _hydRounds = useRef(false);
   useEffect(() => {
     if (!_hydRounds.current) { _hydRounds.current = true; return; }   // never overwrite on mount
@@ -395,7 +382,6 @@ export default function App() {
     try { localStorage.setItem("strokelab_practice", JSON.stringify(practiceLogs)); } catch (e) {}
     pushCloud("practice", practiceLogs);
   }, [practiceLogs]);
-  // Persistent per-course hole game-plans: { [courseName]: { [holeNumber]: planText } }
   const [coursePlans, setCoursePlans] = useState(() => {
     try { const s = localStorage.getItem("strokelab_courseplans"); return s ? JSON.parse(s) : {}; } catch (e) { return {}; }
   });
@@ -405,7 +391,6 @@ export default function App() {
     try { localStorage.setItem("strokelab_courseplans", JSON.stringify(coursePlans)); } catch (e) {}
     pushCloud("courseplans", coursePlans);
   }, [coursePlans]);
-  // Auto-save the in-progress round so a mid-round reload never loses data
   useEffect(() => {
     try { localStorage.setItem("strokelab_draft", JSON.stringify({ form, holeIdx })); } catch (e) {}
   }, [form, holeIdx]);
@@ -1172,13 +1157,13 @@ export default function App() {
                   );
                 })}
               </div>
-              <div style={{ ...lblStyle, marginTop: 12 }}>First Putt Result <span style={{ color: T3, fontWeight: 400 }}>(pace + line, e.g. short + left)</span></div>
+              <div style={{ ...lblStyle, marginTop: 12 }}>First Putt Result <span style={{ color: T3, fontWeight: 400 }}>(pace + line - e.g. Short alone = short & online; Hole High + Left = good speed, missed read)</span></div>
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                {[["made","Holed",GN],["short","Short",RD],["long","Long",OR],["left","Left",BL],["right","Right",TL]].map(([v,label,c]) => {
+                {[["made","Holed",GN],["short","Short",RD],["holehigh","Hole High",GL],["long","Long",OR],["left","Left",BL],["right","Right",TL]].map(([v,label,c]) => {
                   const on = asArr(h.puttMiss).includes(v);
                   return (
-                  <button key={v} onClick={() => sh(gi,"puttMiss", toggleMulti(h.puttMiss, v, [["short","long"],["left","right"]], "made"))}
-                    style={{ ...btnBase, flex: "1 1 18%", padding: "8px 0", fontSize: 12,
+                  <button key={v} onClick={() => sh(gi,"puttMiss", toggleMulti(h.puttMiss, v, [["short","holehigh","long"],["left","right"]], "made"))}
+                    style={{ ...btnBase, flex: "1 1 30%", padding: "8px 0", fontSize: 12,
                       background: on ? c : C2, color: on ? WHT : T2,
                       borderColor: on ? c : BD }}>
                     {label}
@@ -3369,15 +3354,16 @@ export default function App() {
       const made = hs.filter(holed).length;
       return { label, c, n: hs.length, pct: hs.length ? Math.round(made/hs.length*100) : null };
     }).filter(r => r.n > 0);
-    // MISS DIAGNOSTIC (pace vs line) - the short/online metric. puttMiss is now multi (e.g. short+left)
+    // MISS DIAGNOSTIC (pace vs line). puttMiss is multi: short/holehigh/long (pace) + left/right (line)
     const missH = ph.filter(h => { const a = asArr(h.puttMiss); return a.length && !a.includes("made"); });
-    const mc = { short:0, long:0, left:0, right:0 };
+    const mc = { short:0, holehigh:0, long:0, left:0, right:0 };
     missH.forEach(h => { asArr(h.puttMiss).forEach(v => { if (mc[v] != null) mc[v]++; }); });
-    const missTotal = missH.length;                  // count of missed putts (a putt may carry 2 tags)
+    const missTotal = missH.length;                  // count of missed putts (a putt may carry pace + line tags)
     const shortPct = missTotal ? Math.round(mc.short / missTotal * 100) : 0;
-    // Pace axis = any short/long tag; Line axis = any left/right tag
+    // bad pace = short OR long; good speed = hole high; line = left OR right
     const paceMiss = missH.filter(h => { const a = asArr(h.puttMiss); return a.includes("short") || a.includes("long"); }).length;
     const lineMiss = missH.filter(h => { const a = asArr(h.puttMiss); return a.includes("left") || a.includes("right"); }).length;
+    const holeHighPct = missTotal ? Math.round(mc.holehigh / missTotal * 100) : 0;  // good speed, line was the miss
     // Pure pace: short with NO side miss = on-line but under-hit (the firmer-putter signal)
     const shortOnline = missH.filter(h => { const a = asArr(h.puttMiss); return a.includes("short") && !a.includes("left") && !a.includes("right"); }).length;
     const shortOnlinePct = missTotal ? Math.round(shortOnline / missTotal * 100) : 0;
@@ -3436,7 +3422,7 @@ export default function App() {
               </div>
               {/* breakdown bars */}
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {[["Short",mc.short,"#ff9a9a"],["Long",mc.long,"#ffd27a"],["Left",mc.left,"#9ab8ff"],["Right",mc.right,"#7ee0c0"]].map(([l,n,c]) => (
+                {[["Short",mc.short,"#ff9a9a"],["Hole High",mc.holehigh,"#7ee0a0"],["Long",mc.long,"#ffd27a"],["Left",mc.left,"#9ab8ff"],["Right",mc.right,"#7ee0c0"]].map(([l,n,c]) => (
                   <div key={l} style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <span style={{ width: 44, fontSize: 12, color: "rgba(255,255,255,0.85)" }}>{l}</span>
                     <div style={{ flex: 1, height: 16, background: "rgba(255,255,255,0.12)", borderRadius: 5, overflow: "hidden" }}>
@@ -3446,23 +3432,32 @@ export default function App() {
                   </div>
                 ))}
               </div>
-              <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
-                <div style={{ flex: 1, background: "rgba(255,255,255,0.1)", borderRadius: 8, padding: "8px 10px" }}>
+              <div style={{ display: "flex", gap: 10, marginTop: 14, flexWrap: "wrap" }}>
+                <div style={{ flex: "1 1 45%", background: "rgba(255,255,255,0.1)", borderRadius: 8, padding: "8px 10px" }}>
                   <div style={{ fontSize: 10, color: "rgba(255,255,255,0.7)" }}>PACE MISSES (short/long)</div>
                   <div style={{ fontFamily: "monospace", fontSize: 18, fontWeight: 800 }}>{missTotal?Math.round(paceMiss/missTotal*100):0}%</div>
                 </div>
-                <div style={{ flex: 1, background: "rgba(255,255,255,0.1)", borderRadius: 8, padding: "8px 10px" }}>
+                <div style={{ flex: "1 1 45%", background: "rgba(255,255,255,0.1)", borderRadius: 8, padding: "8px 10px" }}>
                   <div style={{ fontSize: 10, color: "rgba(255,255,255,0.7)" }}>LINE MISSES (left/right)</div>
                   <div style={{ fontFamily: "monospace", fontSize: 18, fontWeight: 800 }}>{missTotal?Math.round(lineMiss/missTotal*100):0}%</div>
                 </div>
-                <div style={{ flex: 1, background: "rgba(126,224,160,0.16)", borderRadius: 8, padding: "8px 10px", border: "1px solid rgba(126,224,160,0.4)" }}>
+                <div style={{ flex: "1 1 45%", background: "rgba(255,209,122,0.16)", borderRadius: 8, padding: "8px 10px", border: "1px solid rgba(255,209,122,0.4)" }}>
                   <div style={{ fontSize: 10, color: "rgba(255,255,255,0.85)" }}>SHORT &amp; ON-LINE</div>
-                  <div style={{ fontFamily: "monospace", fontSize: 18, fontWeight: 800, color: "#7ee0a0" }}>{shortOnlinePct}%</div>
+                  <div style={{ fontFamily: "monospace", fontSize: 18, fontWeight: 800, color: "#ffd27a" }}>{shortOnlinePct}%</div>
+                </div>
+                <div style={{ flex: "1 1 45%", background: "rgba(126,224,160,0.16)", borderRadius: 8, padding: "8px 10px", border: "1px solid rgba(126,224,160,0.4)" }}>
+                  <div style={{ fontSize: 10, color: "rgba(255,255,255,0.85)" }}>HOLE HIGH (good speed)</div>
+                  <div style={{ fontFamily: "monospace", fontSize: 18, fontWeight: 800, color: "#7ee0a0" }}>{holeHighPct}%</div>
                 </div>
               </div>
               {shortOnlinePct >= 30 && (
                 <div style={{ marginTop: 12, padding: "9px 11px", background: "rgba(255,255,255,0.1)", borderRadius: 8, fontSize: 11, color: "rgba(255,255,255,0.9)", lineHeight: 1.5 }}>
-                  {shortOnlinePct}% of misses are short on a good line -- pure pace, not read. This is the cleanest case for testing a firmer putter (VZN / broomstick) against the DF3: your line is fine, the ball is dying short.
+                  {shortOnlinePct}% of misses are short but on line -- pure pace, not read, and close. This is the cleanest case for testing a firmer putter (VZN / broomstick) against the DF3: your line is fine, the ball is dying short.
+                </div>
+              )}
+              {holeHighPct >= 35 && holeHighPct >= shortPct && (
+                <div style={{ marginTop: 12, padding: "9px 11px", background: "rgba(126,224,160,0.14)", borderRadius: 8, fontSize: 11, color: "rgba(255,255,255,0.9)", lineHeight: 1.5 }}>
+                  {holeHighPct}% of misses are hole high -- your speed is good, the misses are read/start-line. Pace isn't the problem; spend the practice time on green-reading and start-line gates, not lag drills.
                 </div>
               )}
             </>
