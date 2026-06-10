@@ -301,6 +301,53 @@ function Btn({ label, active, onClick, ac, small }) {
   );
 }
 const TABS = [["dash","Dashboard"],["enter","+ Log Round"],["sg","Strokes Gained"],["holes","Hole Analysis"],["gameplan","Game Plan"],["clubs","Club Stats"],["putting","Putting"],["scoring","Scoring"],["trend","Trends"],["practice","Practice Log"],["insights","Insights"],["hist","Hcp Setup"]];
+// ===== Supabase cloud sync: one table 'strokelab', one row per collection (key/data/updated_at) =====
+const SUPA_URL = "https://bhysrzlmpmpdeyttvjwa.supabase.co";
+const SUPA_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJoeXNyemxtcG1wZGV5dHR2andhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEwNzYzMTUsImV4cCI6MjA5NjY1MjMxNX0.6cBkdXRrpQjhwQLRbbMoqPgOj-7TBHK6JiNvIowJ4fA";
+const SUPA_HEAD = { apikey: SUPA_KEY, Authorization: "Bearer " + SUPA_KEY, "Content-Type": "application/json" };
+async function cloudFetchAll() {
+  const r = await fetch(SUPA_URL + "/rest/v1/strokelab?select=key,data", { headers: SUPA_HEAD });
+  if (!r.ok) throw new Error("fetch " + r.status);
+  const rows = await r.json();
+  const out = {};
+  rows.forEach(row => { out[row.key] = row.data; });
+  return out;
+}
+async function cloudPush(key, data) {
+  const r = await fetch(SUPA_URL + "/rest/v1/strokelab", {
+    method: "POST",
+    headers: { ...SUPA_HEAD, Prefer: "resolution=merge-duplicates" },
+    body: JSON.stringify({ key, data, updated_at: new Date().toISOString() })
+  });
+  if (!r.ok) throw new Error("push " + r.status);
+}
+// Merge helpers - protect against clobbering when two devices have diverged
+function mergeRounds(local, remote) {            // union by id, keep the newer (_ts)
+  const m = {};
+  [...(local||[]), ...(remote||[])].forEach(r => {
+    if (!r || r.id == null) return;
+    const prev = m[r.id];
+    if (!prev || (r._ts||0) >= (prev._ts||0)) m[r.id] = r;
+  });
+  return Object.values(m).sort((a,b) => (a.date||"").localeCompare(b.date||""));
+}
+function mergeUnion(local, remote) {              // union arrays, dedupe by content
+  const seen = new Set(), out = [];
+  [...(local||[]), ...(remote||[])].forEach(x => { const k = JSON.stringify(x); if (!seen.has(k)) { seen.add(k); out.push(x); } });
+  return out;
+}
+function mergePlans(local, remote) {              // deep merge course->hole; on conflict keep the fuller plan
+  const filled = (v) => v && typeof v === "object" ? Object.values(v).filter(x => (x||"").toString().trim()).length : (v ? 1 : 0);
+  const out = { ...(local||{}) };
+  Object.keys(remote||{}).forEach(course => {
+    out[course] = { ...(out[course]||{}) };
+    Object.keys(remote[course]||{}).forEach(hole => {
+      const lv = out[course][hole], rv = remote[course][hole];
+      out[course][hole] = lv == null ? rv : (filled(rv) > filled(lv) ? rv : lv);
+    });
+  });
+  return out;
+}
 export default function App() {
   const [rounds,  setRounds]  = useState(() => {
     try { const s = localStorage.getItem("strokelab_rounds"); return s ? JSON.parse(s) : []; } catch (e) { return []; }
@@ -325,16 +372,28 @@ export default function App() {
   const [practiceLogs, setPracticeLogs] = useState(() => {
     try { const s = localStorage.getItem("strokelab_practice"); return s ? JSON.parse(s) : []; } catch (e) { return []; }
   });
+  // Cloud sync state + debounced push (writes go to localStorage immediately, cloud shortly after)
+  const [syncState, setSyncState] = useState("idle"); // idle|syncing|synced|offline
+  const _pushTimers = useRef({});
+  const pushCloud = (key, data) => {
+    setSyncState("syncing");
+    clearTimeout(_pushTimers.current[key]);
+    _pushTimers.current[key] = setTimeout(() => {
+      cloudPush(key, data).then(() => setSyncState("synced")).catch(() => setSyncState("offline"));
+    }, 700);
+  };
   // Persist to localStorage whenever data changes
   const _hydRounds = useRef(false);
   useEffect(() => {
     if (!_hydRounds.current) { _hydRounds.current = true; return; }   // never overwrite on mount
     try { localStorage.setItem("strokelab_rounds", JSON.stringify(rounds)); } catch (e) {}
+    pushCloud("rounds", rounds);
   }, [rounds]);
   const _hydPractice = useRef(false);
   useEffect(() => {
     if (!_hydPractice.current) { _hydPractice.current = true; return; }
     try { localStorage.setItem("strokelab_practice", JSON.stringify(practiceLogs)); } catch (e) {}
+    pushCloud("practice", practiceLogs);
   }, [practiceLogs]);
   // Persistent per-course hole game-plans: { [courseName]: { [holeNumber]: planText } }
   const [coursePlans, setCoursePlans] = useState(() => {
@@ -344,6 +403,7 @@ export default function App() {
   useEffect(() => {
     if (!_hydPlans.current) { _hydPlans.current = true; return; }
     try { localStorage.setItem("strokelab_courseplans", JSON.stringify(coursePlans)); } catch (e) {}
+    pushCloud("courseplans", coursePlans);
   }, [coursePlans]);
   // Auto-save the in-progress round so a mid-round reload never loses data
   useEffect(() => {
@@ -357,7 +417,25 @@ export default function App() {
   useEffect(() => {
     if (!_hydHist.current) { _hydHist.current = true; return; }
     try { localStorage.setItem("strokelab_hcphistory", JSON.stringify(hcpHistory)); } catch (e) {}
+    pushCloud("hcphistory", hcpHistory);
   }, [hcpHistory]);
+  // Pull from cloud once on open and merge with whatever is on this device
+  const pullCloud = () => {
+    setSyncState("syncing");
+    cloudFetchAll().then(cloud => {
+      if (cloud.rounds)      setRounds(prev => mergeRounds(prev, cloud.rounds));
+      if (cloud.practice)    setPracticeLogs(prev => mergeUnion(prev, cloud.practice));
+      if (cloud.courseplans) setCoursePlans(prev => mergePlans(prev, cloud.courseplans));
+      if (cloud.hcphistory)  setHcpHistory(prev => mergeUnion(prev, cloud.hcphistory));
+      setSyncState("synced");
+      // First-ever run (cloud empty): seed it with this device's data
+      if (!Object.keys(cloud).length) {
+        cloudPush("rounds", rounds); cloudPush("practice", practiceLogs);
+        cloudPush("courseplans", coursePlans); cloudPush("hcphistory", hcpHistory);
+      }
+    }).catch(() => setSyncState("offline"));
+  };
+  useEffect(() => { pullCloud(); }, []);
   const [histDraft, setHistDraft] = useState({ date: new Date().toISOString().split("T")[0], course: "", diff: "" });
   const [gpCourse, setGpCourse] = useState("");
   // Plans are stored per course+hole as an object {tee,avoid,approach,green}. Legacy string values are migrated on read.
@@ -431,7 +509,7 @@ export default function App() {
   function saveRound() {
     const agg = aggHoles(form.holes);
     const ti  = TEES[form.tee] || TEES.blue;
-    const nr  = { ...form, ...agg, rating: ti.rating, slope: ti.slope, avgDrive: parseFloat(form.avgDrive) || 270, id: editId || Date.now() };
+    const nr  = { ...form, ...agg, rating: ti.rating, slope: ti.slope, avgDrive: parseFloat(form.avgDrive) || 270, id: editId || Date.now(), _ts: Date.now() };
     setRounds(p => editId ? p.map(r => r.id === editId ? nr : r) : [...p, nr]);
     setForm(emptyRound()); setEditId(null); setHoleIdx(0);
     setSaved(true); setTimeout(() => setSaved(false), 2500);
@@ -1938,7 +2016,6 @@ export default function App() {
                   ))}
                 </div>
               </Box>
-
               {/* Front vs Back 9 */}
               <Box>
                 <Lbl t="Front 9 vs Back 9 (last 20 rounds)" />
@@ -1969,7 +2046,6 @@ export default function App() {
                   ))}
                 </div>
               </Box>
-
               {/* Score after bogey / par / birdie */}
               <Box>
                 <Lbl t="Mental Resilience -- Score After Hole Result (last 20 rounds)" />
@@ -1998,7 +2074,6 @@ export default function App() {
             </div>
           );
         })()}
-
         <Box>
           <Lbl t="All 18 Holes -- Full Summary" />
           <div style={{ overflowX: "auto" }}>
@@ -2036,7 +2111,6 @@ export default function App() {
             </table>
           </div>
         </Box>
-
         {/* ===== TEE-SHOT DISPERSION (DECADE) ===== */}
         <Box style={{ marginTop: 16 }}>
           <Lbl t="Tee-Shot Dispersion (par 4 & 5, last 20)" />
@@ -2076,7 +2150,6 @@ export default function App() {
             );
           })()}
         </Box>
-
         {/* ===== SG BY APPROACH DISTANCE BAND ===== */}
         <Box style={{ marginTop: 16 }}>
           <Lbl t="Approach Performance by Distance Band (last 20)" />
@@ -2131,7 +2204,6 @@ export default function App() {
             );
           })()}
         </Box>
-
         {/* ===== LIE: FAIRWAY vs ROUGH SCORING ===== */}
         <Box style={{ marginTop: 16 }}>
           <Lbl t="Scoring by Approach Lie (last 20)" />
@@ -2177,7 +2249,6 @@ export default function App() {
             );
           })()}
         </Box>
-
         {/* ===== PUTTING MAKE% BY DISTANCE ===== */}
         <Box style={{ marginTop: 16 }}>
           <Lbl t="Putting Make% vs Scratch by Distance (last 20)" />
@@ -2216,7 +2287,6 @@ export default function App() {
             );
           })()}
         </Box>
-
         {/* ===== DECISION QUALITY (DECADE process) ===== */}
         <Box style={{ marginTop: 16 }}>
           <Lbl t="Decision Quality - Process vs Outcome (last 20)" />
@@ -2252,11 +2322,9 @@ export default function App() {
             );
           })()}
         </Box>
-
       </div>
     );
   }
-
   // -- CLUB STATS --
   function ClubStats() {
     const [showBag,       setShowBag]       = useState(false);
@@ -2266,7 +2334,6 @@ export default function App() {
     if (!rSG.length) return <div style={{ color: T3, padding: 40, textAlign: "center" }}>No rounds yet. Log rounds to see club statistics.</div>;
     const allRounds = last(50);
     const allHoles  = allRounds.flatMap(r => r.holes || []);
-
     // -- FIR per tee club per round --
     // firByRound[date] = { "Driver": { hit, total }, "Mini": {...}, ... }
     const firByRound = {};
@@ -2304,7 +2371,6 @@ export default function App() {
       });
       return row;
     });
-
     // -- GIR per approach club per round --
     const girByRound = {};
     allRounds.forEach(r => {
@@ -2340,11 +2406,9 @@ export default function App() {
       });
       return row;
     });
-
     // Club colours: cycle through palette
     const CLUB_COLORS = [BL, GN, OR, GL, TL, RD, PU, "#e040fb", "#26c6da", "#ff7043", "#66bb6a", "#ffa726", "#29b6f6", "#ec407a"];
     const clubColor = (clubs, i) => CLUB_COLORS[i % CLUB_COLORS.length];
-
     // -- FAIRWAYS BY TEE CLUB --
     const teeClubMap = {};
     allHoles.forEach(h => {
@@ -2363,7 +2427,6 @@ export default function App() {
     const teeClubs = Object.entries(teeClubMap)
       .map(([club, d]) => ({ club, total: d.hit + d.miss, hit: d.hit, miss: d.miss, L: d.L, R: d.R, Sh: d.Sh, pct: d.hit + d.miss > 0 ? Math.round(d.hit / (d.hit + d.miss) * 100) : 0 }))
       .sort((a, b) => b.total - a.total);
-
     // -- GREENS BY APPROACH CLUB x DISTANCE BUCKET --
     const DIST_BUCKETS = [
       { label: "<85m",     min: 0,   max: 85,  club: "LW"    },
@@ -2378,7 +2441,6 @@ export default function App() {
       { label: "195-215m", min: 195, max: 215, club: "Hybrid"},
       { label: ">215m",    min: 215, max: 9999,club: "4 Wood"},
     ];
-
     // apprClubBucket[club][bucketLabel] = { gir, total, L, R, Lg, Sh, sand }
     const apprClubBucket = {};
     allHoles.forEach(h => {
@@ -2399,7 +2461,6 @@ export default function App() {
         if (h.sand) cell.sand++;
       }
     });
-
     // Also aggregate by distance bucket only (all clubs)
     const distBucketTotals = {};
     allHoles.forEach(h => {
@@ -2420,14 +2481,11 @@ export default function App() {
       }
       if (h.approachClub) cell.clubs[h.approachClub] = (cell.clubs[h.approachClub] || 0) + 1;
     });
-
     const apprClubs = Object.keys(apprClubBucket).sort((a, b) => {
       const order = ["Driver","3W","5W","Hybrid","2i","3i","4i","5i","6i","7i","8i","9i","PW","GW","SW","LW","Putter"];
       return (order.indexOf(a) === -1 ? 99 : order.indexOf(a)) - (order.indexOf(b) === -1 ? 99 : order.indexOf(b));
     });
-
     const activeBuckets = DIST_BUCKETS.filter(b => apprClubs.some(c => apprClubBucket[c][b.label]));
-
     function girColor(pct) {
       if (pct === null) return T3;
       return pct >= 70 ? GN : pct >= 50 ? GL : pct >= 30 ? OR : RD;
@@ -2445,10 +2503,8 @@ export default function App() {
       if (d.sand) parts.push("Bkr:" + d.sand);
       return parts.join(" ");
     }
-
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-
         {/* Your Bag */}
         <Box>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -2482,7 +2538,6 @@ export default function App() {
             </div>
           )}
         </Box>
-
         {/* -- DRIVING ACCURACY ALL CLUBS -- */}
         <Box>
           <div style={{ fontSize: 15, fontWeight: 800, color: T1, marginBottom: 2 }}>Driving Accuracy Over Time -- All Clubs</div>
@@ -2565,7 +2620,6 @@ export default function App() {
             </div>
           )}
         </Box>
-
         {/* -- GIR ALL APPROACH CLUBS OVER TIME -- */}
         <Box>
           <div style={{ fontSize: 15, fontWeight: 800, color: T1, marginBottom: 2 }}>Greens in Regulation Over Time -- All Clubs</div>
@@ -2648,7 +2702,6 @@ export default function App() {
             </div>
           )}
         </Box>
-
         {/* ===== TEE-CLUB DECISION ANALYSIS (DECADE) ===== */}
         {(() => {
           const m = {};
@@ -2691,7 +2744,6 @@ export default function App() {
             </Box>
           );
         })()}
-
         <Box>
           <div style={{ fontSize: 15, fontWeight: 800, color: T1, marginBottom: 4 }}>Fairways Hit by Tee Club</div>
           <div style={{ color: T3, fontSize: 11, marginBottom: 12 }}>All rounds tracked. Miss direction shows where the ball goes when you miss the fairway.</div>
@@ -2734,7 +2786,6 @@ export default function App() {
             </div>
           )}
         </Box>
-
         {/* -- GIR BY DISTANCE BUCKET (all clubs) -- */}
         <Box>
         {/* GREEN MISS VISUALISER */}
@@ -2750,7 +2801,6 @@ export default function App() {
           const Lg = missH.filter(h => h.missDir === "Lg").length;
           const Sh = missH.filter(h => h.missDir === "Sh").length;
           const girPct = total > 0 ? Math.round(girCnt / total * 100) : 0;
-
           // Chip vs bunker toggle data
           const chipAtts   = r20.reduce((s,r) => s + (r.chipAtt   || 0), 0);
           const chipMade   = r20.reduce((s,r) => s + (r.chipMade  || 0), 0);
@@ -2758,67 +2808,53 @@ export default function App() {
           const bunkerMade = r20.reduce((s,r) => s + (r.bunkerMade|| 0), 0);
           const chipPct    = chipAtts   > 0 ? Math.round(chipMade   / chipAtts   * 100) : null;
           const bunkerPct  = bunkerAtts > 0 ? Math.round(bunkerMade / bunkerAtts * 100) : null;
-
           const sz = 280; const cx = sz/2; const cy = sz/2;
           const rGreen = 68; const rRough = 110;
-
           // intensity for direction shading
           const maxCnt = Math.max(L, R, Lg, Sh, 1);
           const shade = (cnt) => Math.round(30 + (cnt / maxCnt) * 160);
-
           return (
             <Box style={{ marginBottom: 14 }}>
               <div style={{ fontSize: 15, fontWeight: 800, color: T1, marginBottom: 4 }}>Miss Direction Visualiser -- Last 20 Rounds</div>
               <div style={{ color: T3, fontSize: 11, marginBottom: 14 }}>Based on all approach shots missed. Darker = more misses in that zone. GIR shown in centre.</div>
-
               <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 28, alignItems: "center" }}>
-
                 {/* SVG Green */}
                 <svg width={sz} height={sz} viewBox={"0 0 " + sz + " " + sz} style={{ display: "block" }}>
                   {/* rough background */}
                   <ellipse cx={cx} cy={cy} rx={rRough+8} ry={rRough+8} fill="#c8dfc8" />
-
                   {/* MISS ZONES -- ellipse segments via clip paths */}
                   {/* Long */}
                   <clipPath id="clipLg">
                     <rect x={0} y={0} width={sz} height={cy} />
                   </clipPath>
                   <ellipse cx={cx} cy={cy} rx={rRough} ry={rRough} fill={"rgb("+shade(Lg)+",80,60)"} fillOpacity={0.65} clipPath="url(#clipLg)" />
-
                   {/* Short */}
                   <clipPath id="clipSh">
                     <rect x={0} y={cy} width={sz} height={cy} />
                   </clipPath>
                   <ellipse cx={cx} cy={cy} rx={rRough} ry={rRough} fill={"rgb("+shade(Sh)+",80,60)"} fillOpacity={0.65} clipPath="url(#clipSh)" />
-
                   {/* Left */}
                   <clipPath id="clipL">
                     <rect x={0} y={0} width={cx} height={sz} />
                   </clipPath>
                   <ellipse cx={cx} cy={cy} rx={rRough} ry={rRough} fill={"rgb(60,80,"+shade(L)+")"} fillOpacity={0.55} clipPath="url(#clipL)" />
-
                   {/* Right */}
                   <clipPath id="clipR">
                     <rect x={cx} y={0} width={cx} height={sz} />
                   </clipPath>
                   <ellipse cx={cx} cy={cy} rx={rRough} ry={rRough} fill={"rgb(60,80,"+shade(R)+")"} fillOpacity={0.55} clipPath="url(#clipR)" />
-
                   {/* Division lines */}
                   <line x1={cx} y1={cy - rRough - 10} x2={cx} y2={cy + rRough + 10} stroke="rgba(255,255,255,0.4)" strokeWidth={1} strokeDasharray="4 3" />
                   <line x1={cx - rRough - 10} y1={cy} x2={cx + rRough + 10} y2={cy} stroke="rgba(255,255,255,0.4)" strokeWidth={1} strokeDasharray="4 3" />
-
                   {/* Green surface */}
                   <ellipse cx={cx} cy={cy} rx={rGreen} ry={rGreen} fill="#2d9e5f" stroke="rgba(255,255,255,0.6)" strokeWidth={1.5} />
-
                   {/* Pin */}
                   <line x1={cx} y1={cy - rGreen + 6} x2={cx} y2={cy - rGreen - 22} stroke="#ccc" strokeWidth={1.5} />
                   <polygon points={cx+","+( cy-rGreen-22)+" "+(cx+12)+","+(cy-rGreen-14)+" "+cx+","+(cy-rGreen-6)} fill={RD} />
-
                   {/* GIR centre text */}
                   <text x={cx} y={cy - 8} textAnchor="middle" style={{ fill: "#fff", fontSize: 22, fontWeight: 800, fontFamily: "monospace" }}>{girPct}%</text>
                   <text x={cx} y={cy + 8} textAnchor="middle" style={{ fill: "rgba(255,255,255,0.85)", fontSize: 10, fontWeight: 600 }}>GIR</text>
                   <text x={cx} y={cy + 20} textAnchor="middle" style={{ fill: "rgba(255,255,255,0.7)", fontSize: 9 }}>{girCnt}/{total}</text>
-
                   {/* Direction labels */}
                   <text x={cx} y={cy - rRough - 16} textAnchor="middle" style={{ fill: T1, fontSize: 12, fontWeight: 800 }}>LONG</text>
                   <text x={cx} y={cy - rRough - 5}  textAnchor="middle" style={{ fill: T1, fontSize: 13, fontFamily: "monospace", fontWeight: 700 }}>{Lg}x</text>
@@ -2829,10 +2865,8 @@ export default function App() {
                   <text x={cx + rRough + 14} y={cy + 5}  textAnchor="middle" style={{ fill: T1, fontSize: 12, fontWeight: 800 }}>RIGHT</text>
                   <text x={cx + rRough + 14} y={cy + 16} textAnchor="middle" style={{ fill: T1, fontSize: 13, fontFamily: "monospace", fontWeight: 700 }}>{R}x</text>
                 </svg>
-
                 {/* Stats panel */}
                 <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-
                   {/* Miss count summary */}
                   <div>
                     <div style={{ fontSize: 12, fontWeight: 700, color: T2, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.06em" }}>Miss Breakdown</div>
@@ -2845,12 +2879,10 @@ export default function App() {
                       ))}
                     </div>
                   </div>
-
                   {/* Chip vs Bunker U&D */}
                   <div>
                     <div style={{ fontSize: 12, fontWeight: 700, color: T2, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.06em" }}>Up and Down Split</div>
                     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-
                       {/* Chip */}
                       <div style={{ background: chipPct !== null && chipPct >= 65 ? GNL : chipPct !== null && chipPct >= 50 ? GLL : C2, border: "1px solid " + BD, borderRadius: 8, padding: "10px 14px" }}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5 }}>
@@ -2867,7 +2899,6 @@ export default function App() {
                         </div>
                         <div style={{ fontSize: 10, color: T2 }}>{chipMade}/{chipAtts} saved &nbsp; target: <span style={{ color: GL, fontWeight: 600 }}>65%</span></div>
                       </div>
-
                       {/* Bunker */}
                       <div style={{ background: bunkerPct !== null && bunkerPct >= 55 ? GNL : bunkerPct !== null && bunkerPct >= 40 ? GLL : C2, border: "1px solid " + BD, borderRadius: 8, padding: "10px 14px" }}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5 }}>
@@ -2884,10 +2915,8 @@ export default function App() {
                         </div>
                         <div style={{ fontSize: 10, color: T2 }}>{bunkerMade}/{bunkerAtts} saved &nbsp; target: <span style={{ color: GL, fontWeight: 600 }}>55%</span></div>
                       </div>
-
                     </div>
                   </div>
-
                   <div style={{ fontSize: 10, color: T3, lineHeight: 1.5 }}>
                     Log chip/bunker type in the U/D column when entering rounds to build this split over time.
                   </div>
@@ -2896,7 +2925,6 @@ export default function App() {
             </Box>
           );
         })()}
-
           {/* ===== APPROACH DISTANCE-CONTROL BIAS (short vs long) ===== */}
           {(() => {
             const miss = allHoles.filter(h => h.approachClub && !h.blocked && (h.greenHit == null ? h.gir : h.greenHit) === false && h.missDir);
@@ -2933,7 +2961,6 @@ export default function App() {
               </div>
             );
           })()}
-
           {/* ===== APPROACH BY CLUB - GREENS HIT (approach skill) + MISS PATTERN ===== */}
           {(() => {
             const m = {};
@@ -3012,7 +3039,6 @@ export default function App() {
               </div>
             );
           })()}
-
                   <div style={{ fontSize: 15, fontWeight: 800, color: T1, marginBottom: 4 }}>GIR by Distance Bucket (All Clubs)</div>
           <div style={{ color: T3, fontSize: 11, marginBottom: 12 }}>Overall green-hitting performance by distance. Shows most-used club in each band and dominant miss pattern.</div>
           {Object.keys(distBucketTotals).length === 0 ? (
@@ -3038,7 +3064,6 @@ export default function App() {
             </div>
           )}
         </Box>
-
         {/* -- GIR BY APPROACH CLUB x DISTANCE -- */}
         <Box>
           <div style={{ fontSize: 15, fontWeight: 800, color: T1, marginBottom: 4 }}>GIR % by Club and Distance</div>
@@ -3100,11 +3125,9 @@ export default function App() {
             </div>
           )}
         </Box>
-
       </div>
     );
   }
-
   // -- SCORING (distribution, conversion, leaks) --
   function Scoring() {
     const NAVY = "#18213a", NAVY2 = "#1a3a5c";
@@ -3114,7 +3137,6 @@ export default function App() {
     const holes = rounds.flatMap(r => r.holes || []);
     const nR = rounds.length;
     const per = (n) => nR ? (n / nR).toFixed(1) : "0";
-
     // Scoring distribution
     const rel = holes.map(h => (h.score || h.par) - h.par);
     const dist = {
@@ -3131,12 +3153,10 @@ export default function App() {
       ["Bogey", dist.bogey, OR], ["Double", dist.dbl, RD], ["Triple+", dist.tpl, "#7a1f1f"],
     ];
     function GNL2(){ return "#3fae6e"; }
-
     // Birdie conversion: of GIR holes, % birdie-or-better
     const girHoles = holes.filter(h => h.gir);
     const girBirdie = girHoles.filter(h => (h.score||h.par) <= h.par - 1).length;
     const birdieConv = girHoles.length ? Math.round(girBirdie / girHoles.length * 100) : null;
-
     // Par-type scoring
     const byPar = [3,4,5].map(p => {
       const hs = holes.filter(h => h.par === p);
@@ -3144,7 +3164,6 @@ export default function App() {
       const birdieBetter = hs.filter(h => (h.score||p) <= p-1).length;
       return { p, n: hs.length, avg, vs: avg!=null ? avg - p : null, conv: hs.length ? Math.round(birdieBetter/hs.length*100) : 0 };
     });
-
     // Bounce-back: after a bogey-or-worse, next hole birdie-or-better
     let bbOpp = 0, bbMade = 0, dblAfterDrop = 0;
     rounds.forEach(r => {
@@ -3160,20 +3179,17 @@ export default function App() {
       }
     });
     const bbRate = bbOpp ? Math.round(bbMade / bbOpp * 100) : null;
-
     // Front 9 / Back 9 / closing 3
     const splitAvg = (lo, hi) => {
       const hs = holes.filter(h => h.hole >= lo && h.hole <= hi);
       return hs.length ? (hs.reduce((s,h)=>s+((h.score||h.par)-h.par),0)/hs.length) : null;
     };
     const f9 = splitAvg(1,9), b9 = splitAvg(10,18), close3 = splitAvg(16,18), open3 = splitAvg(1,3);
-
     // Leak waterfall (per round)
     const lost3putt = holes.reduce((s,h)=>s+Math.max(0,(h.putts||2)-2),0);
     const lostPenalty = holes.filter(h=>h.hazard).length;
     const dblPlus = dist.dbl + dist.tpl;
     const totalOver = rel.reduce((s,d)=>s+Math.max(0,d),0);
-
     const Card = ({ label, value, sub, color }) => (
       <div style={{ flex: 1, minWidth: 76, background: CARD, border: "1px solid " + BD, borderRadius: 12, padding: "12px 8px", textAlign: "center" }}>
         <div style={{ fontFamily: "monospace", fontSize: 22, fontWeight: 800, color }}>{value}</div>
@@ -3181,7 +3197,6 @@ export default function App() {
         {sub && <div style={{ fontSize: 9, color: T3, marginTop: 1 }}>{sub}</div>}
       </div>
     );
-
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
         <div style={{ display: "flex", gap: 6 }}>
@@ -3193,7 +3208,6 @@ export default function App() {
             </button>
           ))}
         </div>
-
         {/* THE +2 LEVER: doubles control */}
         <div style={{ background: "linear-gradient(135deg," + NAVY + "," + NAVY2 + ")", borderRadius: 14, padding: "16px", color: "#fff" }}>
           <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 2 }}>BIG-NUMBER CONTROL</div>
@@ -3213,7 +3227,6 @@ export default function App() {
             </div>
           </div>
         </div>
-
         {/* Scoring distribution */}
         <Box>
           <Lbl t="Scoring Distribution (per hole)" />
@@ -3233,7 +3246,6 @@ export default function App() {
             ))}
           </div>
         </Box>
-
         {/* Birdie conversion + scoring KPIs */}
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
           <Card label="Birdie Conv." value={birdieConv != null ? birdieConv + "%" : "--"} sub="of GIR holes" color={birdieConv >= 25 ? GN : birdieConv >= 18 ? GL : OR} />
@@ -3241,7 +3253,6 @@ export default function App() {
           <Card label="Bounce-back" value={bbRate != null ? bbRate + "%" : "--"} sub="birdie after drop" color={bbRate >= 20 ? GN : bbRate >= 12 ? GL : OR} />
           <Card label="Dbl after drop" value={per(dblAfterDrop)} sub="tilt control" color={per(dblAfterDrop) <= 0.5 ? GN : per(dblAfterDrop) <= 1 ? GL : RD} />
         </div>
-
         {/* Par-type */}
         <Box>
           <Lbl t="Scoring by Par Type" />
@@ -3265,7 +3276,6 @@ export default function App() {
             </div>
           )}
         </Box>
-
         {/* Front/back/closing */}
         <Box>
           <Lbl t="Where in the Round (avg vs par per hole)" />
@@ -3285,7 +3295,6 @@ export default function App() {
             </div>
           )}
         </Box>
-
         {/* Leak waterfall */}
         <Box>
           <Lbl t="Where Your Over-Par Strokes Go" />
@@ -3305,7 +3314,6 @@ export default function App() {
       </div>
     );
   }
-
   // -- PUTTING (dedicated) --
   function Putting() {
     const NAVY = "#18213a", NAVY2 = "#1a3a5c";
@@ -3315,7 +3323,6 @@ export default function App() {
     const ph = rounds.flatMap(r => (r.holes || []).filter(h => h.puttDist != null));
     const allH = rounds.flatMap(r => r.holes || []);
     const holed = (h) => asArr(h.puttMiss).includes("made") || h.putts === 1;
-
     // Headline metrics
     const totalPutts = rounds.reduce((s,r) => s + (r.totalPutts || 0), 0);
     const puttsPerRound = rounds.length ? (totalPutts / rounds.length).toFixed(1) : "--";
@@ -3325,7 +3332,6 @@ export default function App() {
     const threePuttRate = allH.length ? (threePuttN / allH.length * 100).toFixed(1) : "0";
     const onePuttN = allH.filter(h => (h.putts||0) === 1).length;
     const onePuttRate = allH.length ? (onePuttN / allH.length * 100).toFixed(1) : "0";
-
     // Make % by distance
     const dBands = [[0,1,"<1m",0.99],[1,2,"1-2m",0.88],[2,3,"2-3m",0.62],[3,5,"3-5m",0.40],[5,8,"5-8m",0.22],[8,99,"8m+",0.09]];
     const distRows = dBands.map(([lo,hi,label,scr]) => {
@@ -3333,7 +3339,6 @@ export default function App() {
       const made = hs.filter(holed).length;
       return { label, n: hs.length, pct: hs.length ? Math.round(made/hs.length*100) : null, scr: Math.round(scr*100) };
     }).filter(r => r.n > 0);
-
     // Make % by break / shape
     const breaks = [["RtoL","R to L",PU],["LtoR","L to R",BL],["uphill","Uphill",GN],["downhill","Downhill",RD],["double","Double",OR]];
     const breakRows = breaks.map(([v,label,c]) => {
@@ -3341,7 +3346,6 @@ export default function App() {
       const made = hs.filter(holed).length;
       return { label, c, n: hs.length, pct: hs.length ? Math.round(made/hs.length*100) : null };
     }).filter(r => r.n > 0);
-
     // MISS DIAGNOSTIC (pace vs line) - the short/online metric. puttMiss is now multi (e.g. short+left)
     const missH = ph.filter(h => { const a = asArr(h.puttMiss); return a.length && !a.includes("made"); });
     const mc = { short:0, long:0, left:0, right:0 };
@@ -3354,7 +3358,6 @@ export default function App() {
     // Pure pace: short with NO side miss = on-line but under-hit (the firmer-putter signal)
     const shortOnline = missH.filter(h => { const a = asArr(h.puttMiss); return a.includes("short") && !a.includes("left") && !a.includes("right"); }).length;
     const shortOnlinePct = missTotal ? Math.round(shortOnline / missTotal * 100) : 0;
-
     // 3-putts by first-putt distance
     const tpBands = [[0,3,"<3m"],[3,6,"3-6m"],[6,10,"6-10m"],[10,99,"10m+"]];
     const tpRows = tpBands.map(([lo,hi,label]) => {
@@ -3362,7 +3365,6 @@ export default function App() {
       const tp = hs.filter(h => (h.putts||0) >= 3).length;
       return { label, n: hs.length, tp, rate: hs.length ? Math.round(tp/hs.length*100) : 0 };
     }).filter(r => r.n > 0);
-
     const Card = ({ label, value, sub, color }) => (
       <div style={{ flex: 1, minWidth: 78, background: CARD, border: "1px solid " + BD, borderRadius: 12, padding: "12px 10px", textAlign: "center" }}>
         <div style={{ fontFamily: "monospace", fontSize: 24, fontWeight: 800, color }}>{value}</div>
@@ -3370,7 +3372,6 @@ export default function App() {
         {sub && <div style={{ fontSize: 9, color: T3, marginTop: 1 }}>{sub}</div>}
       </div>
     );
-
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
         {/* window toggle */}
@@ -3383,7 +3384,6 @@ export default function App() {
             </button>
           ))}
         </div>
-
         {/* Headline */}
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
           <Card label="Putts / Round" value={puttsPerRound} color={parseFloat(puttsPerRound) <= 30 ? GN : parseFloat(puttsPerRound) <= 32 ? GL : RD} />
@@ -3391,7 +3391,6 @@ export default function App() {
           <Card label="3-Putt %" value={threePuttRate + "%"} sub={threePuttN + " total"} color={parseFloat(threePuttRate) <= 3 ? GN : parseFloat(threePuttRate) <= 6 ? GL : RD} />
           <Card label="1-Putt %" value={onePuttRate + "%"} sub={onePuttN + " total"} color={parseFloat(onePuttRate) >= 40 ? GN : parseFloat(onePuttRate) >= 30 ? GL : OR} />
         </div>
-
         {/* ===== MISS DIAGNOSTIC: PACE vs LINE (the short/online check) ===== */}
         <div style={{ background: "linear-gradient(135deg," + NAVY + "," + NAVY2 + ")", borderRadius: 14, padding: "16px 16px", color: "#fff" }}>
           <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: "0.04em", marginBottom: 2 }}>MISS DIAGNOSTIC -- Pace vs Line</div>
@@ -3446,7 +3445,6 @@ export default function App() {
             </>
           )}
         </div>
-
         {/* ===== MAKE % BY DISTANCE ===== */}
         <Box>
           <Lbl t="Make % by Distance (vs Scratch)" />
@@ -3470,7 +3468,6 @@ export default function App() {
           )}
           <div style={{ fontSize: 10, color: T3, marginTop: 8, fontStyle: "italic" }}>Dashed line = scratch make rate. Bars above it = gaining.</div>
         </Box>
-
         {/* ===== MAKE % BY SHAPE / BREAK ===== */}
         <Box>
           <Lbl t="Make % by Break / Slope" />
@@ -3497,7 +3494,6 @@ export default function App() {
             </div>
           )}
         </Box>
-
         {/* ===== 3-PUTT AVOIDANCE ===== */}
         <Box>
           <Lbl t="3-Putt Avoidance by First-Putt Distance" />
@@ -3522,7 +3518,6 @@ export default function App() {
       </div>
     );
   }
-
   // -- TRENDS --
   function Trends() {
     if (!rSG.length) return <div style={{ color: T3, padding: 40, textAlign: "center" }}>No rounds yet.</div>;
@@ -3961,6 +3956,11 @@ export default function App() {
           )}
           <button onClick={clearAllData} style={{ background: "#fff0f0", color: "#c0392b", border: "1px solid #fcc", borderRadius: 6, padding: "4px 10px", fontSize: 11, cursor: "pointer" }}>
             Clear Data
+          </button>
+          <button onClick={pullCloud} title="Sync with cloud now"
+            style={{ display: "flex", alignItems: "center", gap: 5, background: C2, color: T2, border: "1px solid " + BD, borderRadius: 5, padding: "5px 10px", fontSize: 11, cursor: "pointer" }}>
+            <span style={{ width: 7, height: 7, borderRadius: "50%", background: syncState === "synced" ? GN : syncState === "syncing" ? GL : syncState === "offline" ? RD : T3 }} />
+            {syncState === "synced" ? "Synced" : syncState === "syncing" ? "Syncing" : syncState === "offline" ? "Offline" : "Sync"}
           </button>
           <button onClick={doExport} style={{ background: C2, color: T2, border: "1px solid " + BD, borderRadius: 5, padding: "5px 12px", fontSize: 11, cursor: "pointer" }}>Export</button>
           <button onClick={() => fileRef.current.click()} style={{ background: C2, color: T2, border: "1px solid " + BD, borderRadius: 5, padding: "5px 12px", fontSize: 11, cursor: "pointer" }}>Import</button>
