@@ -830,8 +830,8 @@ export default function App() {
   }
   function GamePlan() {
     const NAVY = "#18213a", WHT = "#ffffff";
-    // Courses that have either rounds or saved plans
-    const courseSet = new Set();
+    // Courses that have either rounds or saved plans (Huntingdale always available)
+    const courseSet = new Set(["Huntingdale GC"]);
     rounds.forEach(r => { if (r.course) courseSet.add(r.course); });
     Object.keys(coursePlans || {}).forEach(c => { if (c) courseSet.add(c); });
     const courses = [...courseSet];
@@ -884,6 +884,29 @@ export default function App() {
             style={{ width: "100%", background: C2, border: "1px solid " + BD, borderRadius: 8, padding: "11px 12px", fontSize: 15, color: T1, marginTop: 4 }}>
             {courses.map(c => <option key={c} value={c}>{c}{playCount[c] ? "  (" + playCount[c] + " rounds)" : ""}</option>)}
           </select>
+          {(coursePlans[course] && Object.keys(coursePlans[course]).length > 0 && courses.filter(c => c !== course).length > 0) && (
+            <div style={{ marginTop: 8 }}>
+              <select value="" onChange={e => {
+                const target = e.target.value;
+                if (!target || target === course) return;
+                if (!window.confirm("Move all \"" + course + "\" plans into \"" + target + "\"?")) return;
+                setCoursePlans(prev => {
+                  const next = { ...prev };
+                  const src = next[course] || {};
+                  const dst = { ...(next[target] || {}) };
+                  const filled = (v) => v && typeof v === "object" ? Object.values(v).filter(x => (x||"").toString().trim()).length : (v ? 1 : 0);
+                  Object.keys(src).forEach(hole => { dst[hole] = (filled(dst[hole]) >= filled(src[hole])) ? (dst[hole] || src[hole]) : src[hole]; });
+                  next[target] = dst;
+                  delete next[course];
+                  return next;
+                });
+                setGpCourse(target);
+              }} style={{ width: "100%", background: C2, color: BL, border: "1px solid " + BL, borderRadius: 8, padding: "9px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+                <option value="">Move these plans to another course...</option>
+                {courses.filter(c => c !== course).map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+          )}
         </div>
         {HOLES.map(ch => {
           const st = holeStats(ch.h);
@@ -3551,7 +3574,6 @@ export default function App() {
       const allH = last(20).flatMap(r => (r.holes||[]).filter(h => h.gir && h.puttDist && Math.round(h.puttDist) === dist));
       return { dist: dist + "m", pct: allH.length >= 2 ? Math.round(allH.filter(h=>h.putts===1).length/allH.length*100) : null, n: allH.length };
     }).filter(d => d.n >= 1);
-
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
@@ -3606,18 +3628,15 @@ export default function App() {
       </div>
     );
   }
-
   // -- INSIGHTS --
   function PracticeLog() {
     const AREAS = ["Putting","Chipping","Bunker","Approach","Driver","Iron Play","Mental","Fitness","Course Management"];
     const logs = practiceLogs;
-
     function savePractice() {
       if (!practiceForm.drill.trim()) return;
       setPracticeLogs(p => [...p, { ...practiceForm, id: Date.now() }]);
       setPracticeForm(f => ({ ...f, drill: "", made: null, att: null, notes: "", duration: 30 }));
     }
-
     // Stats per area
     const areaStats = AREAS.map(area => {
       const sessions = logs.filter(l => l.area === area);
@@ -3626,14 +3645,12 @@ export default function App() {
       const convPct = withConv.length ? Math.round(withConv.reduce((s,l) => s+l.made/l.att, 0)/withConv.length*100) : null;
       return { area, sessions: sessions.length, totalMins, convPct };
     }).filter(a => a.sessions > 0);
-
     // Time allocation chart data (last 30 days)
     const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 30);
     const recent30 = logs.filter(l => new Date(l.date) >= cutoff);
     const allocData = AREAS.map(area => ({
       area, mins: recent30.filter(l=>l.area===area).reduce((s,l)=>s+(l.duration||0),0)
     })).filter(d => d.mins > 0).sort((a,b)=>b.mins-a.mins);
-
     // Weakness from SG
     const weakArea = s10 ? [
       { area: "Putting",    sg: s10.sgPutt || 0 },
@@ -3641,12 +3658,9 @@ export default function App() {
       { area: "Approach",   sg: s10.sgApp  || 0 },
       { area: "Driver",     sg: s10.sgOTT  || 0 },
     ].sort((a,b) => a.sg - b.sg)[0] : null;
-
     const inp = { background: CARD, color: T1, border: "1px solid " + BD, borderRadius: 5, padding: "7px 9px", fontSize: 13, outline: "none", fontFamily: "inherit" };
-
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-
         {/* Priority from SG */}
         {weakArea && (
           <Box style={{ borderLeft: "4px solid " + RD, background: RDL }}>
@@ -3659,7 +3673,6 @@ export default function App() {
             </div>
           </Box>
         )}
-
         {/* Log session form */}
         <Box>
           <div style={{ fontSize: 15, fontWeight: 800, color: T1, marginBottom: 12 }}>Log Practice Session</div>
@@ -3709,7 +3722,6 @@ export default function App() {
             Save Session
           </button>
         </Box>
-
         {/* Time allocation pie / bars */}
         {allocData.length > 0 && (
           <Box>
@@ -3735,7 +3747,6 @@ export default function App() {
             {weakArea && <div style={{ fontSize: 10, color: RD, marginTop: 6 }}>* = SG-identified priority area</div>}
           </Box>
         )}
-
         {/* Per-area stats */}
         {areaStats.length > 0 && (
           <Box>
@@ -3773,7 +3784,6 @@ export default function App() {
             </div>
           </Box>
         )}
-
         {/* Session history */}
         {logs.length > 0 && (
           <Box>
@@ -3792,7 +3802,6 @@ export default function App() {
             </div>
           </Box>
         )}
-
         {logs.length === 0 && (
           <Box>
             <div style={{ color: T3, textAlign: "center", padding: "20px 0", fontSize: 13 }}>No practice sessions logged yet. Log sessions above to track your practice investment against on-course results.</div>
@@ -3801,7 +3810,6 @@ export default function App() {
       </div>
     );
   }
-
   function Insights() {
     if (!s10) return <div style={{ color: T3, padding: 40, textAlign: "center" }}>Log at least 5 rounds to generate insights.</div>;
     const [condFilter, setCondFilter] = useState(null);
@@ -3816,7 +3824,6 @@ export default function App() {
       putts: ravg(filteredRounds, "totalPutts"),
       sgT:   ravg(filteredRounds, "sgTotal"),
     } : null;
-
     const cats = [
       { name: "Off the Tee",    sg: s10.sgOTT, p2: 0.18, tips: ["Play to your miss width off tee -- avoid short-side danger (DECADE)", "10 extra yards = approx +0.08 SG -- distance gains are free shots", "Use Hole Analysis tab to find which holes your tee club is costing you"] },
       { name: "Approach Play",  sg: s10.sgApp, p2: 0.32, tips: ["Every foot of proximity gained = approx +0.012 SG App", "At +2: target under 18ft avg from 150y -- check your distance-to-hole data", "Aim centre-to-fat side away from trouble (DECADE principle)"] },
@@ -3864,7 +3871,6 @@ export default function App() {
             <div style={{ color: T3, fontSize: 11, marginTop: 6 }}>Need 3+ rounds with this condition to show stats. Keep logging!</div>
           )}
         </Box>
-
         <Box style={{ borderLeft: "4px solid " + GL, background: GLL }}>
           <div style={{ fontSize: 14, color: GL, fontWeight: 800, marginBottom: 6 }}>DECADE Golf Framework</div>
           <div style={{ color: T1, fontSize: 13, lineHeight: 1.7 }}>
@@ -3931,7 +3937,6 @@ export default function App() {
       </div>
     );
   }
-
   // -- SHELL --
   return (
     <div style={{ minHeight: "100vh", background: BG, color: T1, fontFamily: "system-ui, sans-serif", fontSize: 14 }}>
