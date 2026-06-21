@@ -21,6 +21,11 @@ const TEES = {
   blue:  { label: "Blue",  rating: 73.0, slope: 141, scratch: 73 },
   black: { label: "Black", rating: 75.0, slope: 143, scratch: 75 },
 };
+const DEFAULT_COURSE_DEFS = {
+  "Huntingdale GC":        { pars: [4,4,3,4,4,5,5,3,4, 4,4,4,5,4,3,4,5,4], tees: { blue: { rating: 73.0, slope: 141 }, black: { rating: 75.0, slope: 143 } } },
+  "Riversdale Golf Club":  { pars: [3,4,3,4,5,5,5,4,4, 4,4,4,5,3,5,4,3,4], tees: { red:  { rating: 70.0, slope: 128 } } },
+  "St Andrews Beach":      { pars: [5,4,4,3,4,3,4,4,4, 4,3,4,4,4,4,3,5,4], tees: { blue: { rating: 70.0, slope: 130 } } },
+};
 const BAG = [
   { name: "Driver",  loft:  9,   carry: 260, tee: true,  appr: false },
   { name: "Mini",    loft: 13.5, carry: 230, tee: true,  appr: false },
@@ -361,6 +366,10 @@ export default function App() {
   const [practiceLogs, setPracticeLogs] = useState(() => {
     try { const s = localStorage.getItem("strokelab_practice"); return s ? JSON.parse(s) : []; } catch (e) { return []; }
   });
+  const [courseDefs, setCourseDefs] = useState(() => {
+    try { const s = localStorage.getItem("strokelab_coursedefs"); return s ? { ...DEFAULT_COURSE_DEFS, ...JSON.parse(s) } : DEFAULT_COURSE_DEFS; } catch (e) { return DEFAULT_COURSE_DEFS; }
+  });
+  const [showCourseMgr, setShowCourseMgr] = useState(false);
   const [syncState, setSyncState] = useState("idle"); // idle|syncing|synced|offline
   const _pushTimers = useRef({});
   const pushCloud = (key, data) => {
@@ -382,6 +391,12 @@ export default function App() {
     try { localStorage.setItem("strokelab_practice", JSON.stringify(practiceLogs)); } catch (e) {}
     pushCloud("practice", practiceLogs);
   }, [practiceLogs]);
+  const _hydDefs = useRef(false);
+  useEffect(() => {
+    if (!_hydDefs.current) { _hydDefs.current = true; return; }
+    try { localStorage.setItem("strokelab_coursedefs", JSON.stringify(courseDefs)); } catch (e) {}
+    pushCloud("coursedefs", courseDefs);
+  }, [courseDefs]);
   const [coursePlans, setCoursePlans] = useState(() => {
     try { const s = localStorage.getItem("strokelab_courseplans"); return s ? JSON.parse(s) : {}; } catch (e) { return {}; }
   });
@@ -394,7 +409,6 @@ export default function App() {
   useEffect(() => {
     try { localStorage.setItem("strokelab_draft", JSON.stringify({ form, holeIdx })); } catch (e) {}
   }, [form, holeIdx]);
-  // Seeded handicap history (date + course + GA differential), feeds handicap only
   const [hcpHistory, setHcpHistory] = useState(() => {
     try { const s = localStorage.getItem("strokelab_hcphistory"); return s ? JSON.parse(s) : []; } catch (e) { return []; }
   });
@@ -404,26 +418,24 @@ export default function App() {
     try { localStorage.setItem("strokelab_hcphistory", JSON.stringify(hcpHistory)); } catch (e) {}
     pushCloud("hcphistory", hcpHistory);
   }, [hcpHistory]);
-  // Pull from cloud once on open and merge with whatever is on this device
   const pullCloud = () => {
     setSyncState("syncing");
     cloudFetchAll().then(cloud => {
       if (cloud.rounds)      setRounds(prev => mergeRounds(prev, cloud.rounds));
       if (cloud.practice)    setPracticeLogs(prev => mergeUnion(prev, cloud.practice));
+      if (cloud.coursedefs)  setCourseDefs(prev => ({ ...prev, ...cloud.coursedefs }));
       if (cloud.courseplans) setCoursePlans(prev => mergePlans(prev, cloud.courseplans));
       if (cloud.hcphistory)  setHcpHistory(prev => mergeUnion(prev, cloud.hcphistory));
       setSyncState("synced");
-      // First-ever run (cloud empty): seed it with this device's data
       if (!Object.keys(cloud).length) {
         cloudPush("rounds", rounds); cloudPush("practice", practiceLogs);
-        cloudPush("courseplans", coursePlans); cloudPush("hcphistory", hcpHistory);
+        cloudPush("courseplans", coursePlans); cloudPush("hcphistory", hcpHistory); cloudPush("coursedefs", courseDefs);
       }
     }).catch(() => setSyncState("offline"));
   };
   useEffect(() => { pullCloud(); }, []);
   const [histDraft, setHistDraft] = useState({ date: new Date().toISOString().split("T")[0], course: "", diff: "" });
   const [gpCourse, setGpCourse] = useState("");
-  // Plans are stored per course+hole as an object {tee,avoid,approach,green}. Legacy string values are migrated on read.
   const getPlan = (course, holeNum) => {
     const k = course || "Unspecified course";
     const raw = coursePlans[k] && coursePlans[k][holeNum];
@@ -438,12 +450,10 @@ export default function App() {
       return { ...prev, [k]: { ...(prev[k] || {}), [holeNum]: { tee:"", avoid:"", approach:"", green:"", ...obj, [key]: val } } };
     });
   };
-  // Labelled display string (non-empty fields only) for read-only views + "has a plan" checks
   const planText = (course, holeNum) => {
     const p = getPlan(course, holeNum);
     return PLAN_FIELDS.filter(([key]) => (p[key] || "").trim()).map(([key, lab]) => lab + ": " + p[key].trim()).join("\n");
   };
-  // Structured 4-line plan editor (Tee / Avoid / Approach / Green). Called inline (not as a component) so text inputs keep focus.
   const planFields = (course, holeNum, compact) => {
     const p = getPlan(course, holeNum);
     const ph = { tee: "club + aim line", avoid: "dead side / hazard", approach: "pin plan, ideal miss", green: "slope / where to leave it" };
@@ -460,6 +470,69 @@ export default function App() {
     );
   };
   const [practiceForm, setPracticeForm] = useState({ date: new Date().toISOString().split("T")[0], area: "Putting", drill: "", duration: 30, notes: "", made: null, att: null });
+  const courseManager = () => {
+    const names = Object.keys(courseDefs);
+    const cyclePar = (course, i) => setCourseDefs(prev => { const def = prev[course]; const pars = [...def.pars]; pars[i] = pars[i] >= 6 ? 3 : pars[i] + 1; return { ...prev, [course]: { ...def, pars } }; });
+    const setTeeVal = (course, tee, key, val) => setCourseDefs(prev => { const def = prev[course]; return { ...prev, [course]: { ...def, tees: { ...def.tees, [tee]: { ...def.tees[tee], [key]: val } } } }; });
+    const addTee = (course) => { const n = (window.prompt("Tee name (e.g. white)") || "").trim().toLowerCase(); if (!n) return; setCourseDefs(prev => ({ ...prev, [course]: { ...prev[course], tees: { ...prev[course].tees, [n]: { rating: 72, slope: 113 } } } })); };
+    const delTee = (course, tee) => setCourseDefs(prev => { const tees = { ...prev[course].tees }; delete tees[tee]; return { ...prev, [course]: { ...prev[course], tees } }; });
+    const addCourse = () => { const n = (window.prompt("New course name") || "").trim(); if (!n || courseDefs[n]) return; setCourseDefs(prev => ({ ...prev, [n]: { pars: Array(18).fill(4), tees: { default: { rating: 72, slope: 113 } } } })); };
+    const delCourse = (name) => { if (window.confirm("Delete course \"" + name + "\"?")) setCourseDefs(prev => { const x = { ...prev }; delete x[name]; return x; }); };
+    return (
+      <div style={{ maxWidth: 560, margin: "0 auto", padding: "0 0 90px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <div style={{ fontSize: 18, fontWeight: 800, color: T1 }}>Courses</div>
+          <button onClick={() => setShowCourseMgr(false)} style={{ background: GN, color: "#fff", border: "none", borderRadius: 8, padding: "8px 18px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>Done</button>
+        </div>
+        <div style={{ fontSize: 12, color: T2, marginBottom: 12, lineHeight: 1.5 }}>Tap a hole to cycle its par (3-6). Set each tee's rating &amp; slope to the real values from the scorecard/website -- they drive your handicap differentials.</div>
+        <button onClick={addCourse} style={{ width: "100%", background: C2, color: BL, border: "1px solid " + BL, borderRadius: 8, padding: "10px", fontSize: 13, fontWeight: 700, cursor: "pointer", marginBottom: 14 }}>+ Add course</button>
+        {names.map(name => {
+          const def = courseDefs[name];
+          const total = def.pars.reduce((a, b) => a + b, 0);
+          return (
+            <div key={name} style={{ background: CARD, border: "1px solid " + BD, borderRadius: 12, padding: "14px", marginBottom: 12 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                <div style={{ fontSize: 15, fontWeight: 800, color: T1 }}>{name}</div>
+                <div style={{ fontSize: 12, color: T3 }}>Par {total}</div>
+              </div>
+              {[0, 9].map(start => (
+                <div key={start} style={{ display: "flex", gap: 4, marginBottom: 6 }}>
+                  {def.pars.slice(start, start + 9).map((p, j) => {
+                    const i = start + j;
+                    return (
+                      <button key={i} onClick={() => cyclePar(name, i)}
+                        style={{ flex: 1, padding: "6px 0", borderRadius: 6, border: "1px solid " + BD, background: C2, cursor: "pointer" }}>
+                        <div style={{ fontSize: 9, color: T3 }}>{i + 1}</div>
+                        <div style={{ fontSize: 15, fontWeight: 800, color: T1 }}>{p}</div>
+                      </button>
+                    );
+                  })}
+                </div>
+              ))}
+              <div style={{ marginTop: 10 }}>
+                {Object.entries(def.tees).map(([tee, t]) => (
+                  <div key={tee} style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 6 }}>
+                    <span style={{ width: 56, fontSize: 12, fontWeight: 700, color: T2, textTransform: "capitalize" }}>{tee}</span>
+                    <span style={{ fontSize: 11, color: T3 }}>R</span>
+                    <input type="number" step="0.1" value={t.rating} onChange={e => setTeeVal(name, tee, "rating", parseFloat(e.target.value) || 0)}
+                      style={{ width: 62, background: C2, border: "1px solid " + BD, borderRadius: 6, padding: "6px 8px", fontSize: 13, color: T1 }} />
+                    <span style={{ fontSize: 11, color: T3 }}>S</span>
+                    <input type="number" value={t.slope} onChange={e => setTeeVal(name, tee, "slope", parseInt(e.target.value) || 0)}
+                      style={{ width: 62, background: C2, border: "1px solid " + BD, borderRadius: 6, padding: "6px 8px", fontSize: 13, color: T1 }} />
+                    {Object.keys(def.tees).length > 1 && <button onClick={() => delTee(name, tee)} style={{ background: "none", border: "none", color: RD, fontSize: 14, cursor: "pointer" }}>x</button>}
+                  </div>
+                ))}
+                <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+                  <button onClick={() => addTee(name)} style={{ background: C2, border: "1px solid " + BD, borderRadius: 6, padding: "5px 10px", fontSize: 11, color: T2, cursor: "pointer" }}>+ tee</button>
+                  <button onClick={() => delCourse(name)} style={{ background: "none", border: "none", color: RD, fontSize: 11, cursor: "pointer", marginLeft: "auto" }}>Delete course</button>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
   const [roundTargets] = useState({ girMin: 11, puttsMax: 30, firMin: 8, hazMax: 1 });
   const clearAllData = () => {
     if (window.confirm("Delete ALL rounds and practice logs? This cannot be undone.")) {
@@ -490,10 +563,20 @@ export default function App() {
     };
   }, [rSG]);
   const sh = (i, k, v) => setForm(f => { const holes = [...f.holes]; holes[i] = { ...holes[i], [k]: v }; return { ...f, holes }; });
-  const teeInfo = TEES[form.tee] || TEES.blue;
+  const teeMapFor = (course) => (courseDefs[course] && courseDefs[course].tees) || TEES;
+  const teeInfoFor = (course, tee) => teeMapFor(course)[tee] || Object.values(teeMapFor(course))[0] || { rating: 72, slope: 113 };
+  const teeInfo = teeInfoFor(form.course, form.tee);
+  const changeCourse = (name) => {
+    const def = courseDefs[name];
+    const pars = (def && def.pars) || HOLES.map(h => h.p);
+    const tee = def ? Object.keys(def.tees)[0] : form.tee;
+    const ti = teeInfoFor(name, tee);
+    setForm(f => ({ ...f, course: name, tee, rating: ti.rating, slope: ti.slope,
+      holes: f.holes.map((h, i) => ({ ...h, hole: i + 1, par: pars[i], score: (h.score === h.par ? pars[i] : h.score) })) }));
+  };
   function saveRound() {
     const agg = aggHoles(form.holes);
-    const ti  = TEES[form.tee] || TEES.blue;
+    const ti  = teeInfoFor(form.course, form.tee);
     const nr  = { ...form, ...agg, rating: ti.rating, slope: ti.slope, avgDrive: parseFloat(form.avgDrive) || 270, id: editId || Date.now(), _ts: Date.now() };
     setRounds(p => editId ? p.map(r => r.id === editId ? nr : r) : [...p, nr]);
     setForm(emptyRound()); setEditId(null); setHoleIdx(0);
@@ -540,7 +623,6 @@ export default function App() {
   const backScore  = form.holes.slice(9).reduce((s,h)  => s + (h.score||h.par), 0);
   const totalScore = frontScore + backScore;
   const totalPM    = totalScore - TOTAL_PAR;
-  // -- DASHBOARD --
   function Dash() {
     if (!rSG.length) return (
       <div style={{ textAlign: "center", paddingTop: 80 }}>
@@ -577,7 +659,6 @@ export default function App() {
           const last20 = series.slice(-20);
           const n = last20.length;
           const take = Math.min(8, n);   // top 8 counting differentials
-          // best `take` differentials (the counting scores)
           const ranked = last20.map((d, i) => ({ ...d, i })).sort((a, b) => a.diff - b.diff);
           const counting = ranked.slice(0, take);
           return (
@@ -736,7 +817,6 @@ export default function App() {
       </div>
     );
   }
-  // -- LOG ROUND --
   function HcpSetup() {
     const series = buildDiffSeries(rounds, hcpHistory);
     const last20 = series.slice(-20);
@@ -815,12 +895,10 @@ export default function App() {
   }
   function GamePlan() {
     const NAVY = "#18213a", WHT = "#ffffff";
-    // Courses that have either rounds or saved plans (Huntingdale always available)
     const courseSet = new Set(["Huntingdale GC"]);
     rounds.forEach(r => { if (r.course) courseSet.add(r.course); });
     Object.keys(coursePlans || {}).forEach(c => { if (c) courseSet.add(c); });
     const courses = [...courseSet];
-    // most-played course as default
     const playCount = {};
     rounds.forEach(r => { if (r.course) playCount[r.course] = (playCount[r.course]||0)+1; });
     const defCourse = courses.sort((a,b) => (playCount[b]||0)-(playCount[a]||0))[0] || "";
@@ -835,7 +913,6 @@ export default function App() {
     }
     const courseRounds = rounds.filter(r => r.course === course);
     const lblS = { fontSize: 11, fontWeight: 700, color: T3, textTransform: "uppercase", letterSpacing: "0.06em" };
-    // Per-hole accumulated knowledge for this course
     const holeStats = (holeNum) => {
       const hs = courseRounds.map(r => (r.holes||[]).find(h => h.hole === holeNum)).filter(Boolean);
       if (!hs.length) return { n: 0 };
@@ -846,7 +923,6 @@ export default function App() {
       const firPct = teeH.length ? Math.round(teeH.filter(firHit).length/teeH.length*100) : null;
       const greenH = hs.filter(h => !h.blocked && (h.greenHit==null?h.gir:h.greenHit)!=null);
       const ghPct = greenH.length ? Math.round(greenH.filter(h => (h.greenHit==null?h.gir:h.greenHit)===true).length/greenH.length*100) : null;
-      // miss patterns
       const missCount = { L:0, R:0, S:0, Lg:0 };
       hs.forEach(h => { if (h.missDir) { const k = h.missDir==="Sh"?"S":h.missDir; if (missCount[k]!=null) missCount[k]++; } });
       const topMiss = Object.entries(missCount).filter(x=>x[1]>0).sort((a,b)=>b[1]-a[1])[0];
@@ -938,6 +1014,7 @@ export default function App() {
     );
   }
   function EnterRound() {
+    if (showCourseMgr) return courseManager();
     const h   = form.holes[holeIdx];
     const gi  = holeIdx;
     const par = h.par;
@@ -967,11 +1044,9 @@ export default function App() {
       if (d === 2) return OR;
       return RD;
     }
-    // Auto-derive GIR from score - putts <= par - 2
     function autoGIR(hole) {
       return (hole.score - hole.putts) <= (hole.par - 2);
     }
-    // One-tap regulation par fill
     function fillRegPar() {
       const updates = {
         score: par, putts: 2, gir: true, greenHit: true, prox: 8, puttDist: 8,
@@ -1030,22 +1105,22 @@ export default function App() {
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
             <input type="date" value={form.date} onChange={e => setForm(f => ({ ...f, date: e.target.value }))}
               style={{ background: C2, border: "1px solid " + BD, borderRadius: 8, padding: "8px 10px", fontSize: 14, color: T1, fontFamily: "inherit", flex: 1 }} />
-            <input value={form.course} onChange={e => setForm(f => ({ ...f, course: e.target.value }))}
-              placeholder="Course name" list="course-list"
-              style={{ background: C2, border: "1px solid " + BD, borderRadius: 8, padding: "8px 10px", fontSize: 14, color: T1, fontFamily: "inherit", flex: 2, minWidth: 140 }} />
-            <datalist id="course-list">
-              {["Huntingdale GC","Royal Melbourne (West)","Royal Melbourne (East)","Kingston Heath GC","Victoria GC","Commonwealth GC","Metropolitan GC","Yarra Yarra GC"].map(c =>
-                <option key={c} value={c} />)}
-            </datalist>
+            <select value={form.course} onChange={e => changeCourse(e.target.value)}
+              style={{ background: C2, border: "1px solid " + BD, borderRadius: 8, padding: "8px 10px", fontSize: 14, color: T1, fontFamily: "inherit", flex: 2, minWidth: 140 }}>
+              {[...new Set([...Object.keys(courseDefs), form.course].filter(Boolean))].map(c =>
+                <option key={c} value={c}>{c}</option>)}
+            </select>
+            <button onClick={() => setShowCourseMgr(true)}
+              style={{ background: C2, border: "1px solid " + BD, borderRadius: 8, padding: "8px 12px", fontSize: 12, color: BL, fontWeight: 700, cursor: "pointer" }}>Courses</button>
           </div>
           <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
-            {Object.entries(TEES).map(([key, t]) => (
+            {Object.entries(teeMapFor(form.course)).map(([key, t]) => (
               <button key={key} onClick={() => setForm(f => ({ ...f, tee: key, rating: t.rating, slope: t.slope }))}
                 style={{ ...btnBase, padding: "8px 0", fontSize: 12,
                   background: form.tee === key ? NAVY : C2,
                   color: form.tee === key ? WHT : T2,
                   borderColor: form.tee === key ? NAVY : BD }}>
-                {t.label}<br /><span style={{ fontSize: 10, fontWeight: 400 }}>R{t.rating} S{t.slope}</span>
+                {(t.label || key)}<br /><span style={{ fontSize: 10, fontWeight: 400 }}>R{t.rating} S{t.slope}</span>
               </button>
             ))}
           </div>
@@ -1395,16 +1470,13 @@ export default function App() {
     const [sgView,    setSgView]    = useState("radar");    // "radar" | "trend"
     const [sgWindow,  setSgWindow]  = useState(10);         // 1=last, 3, 5, 10, 20, 0=all
     if (!rSG.length) return <div style={{ color: T3, padding: 40, textAlign: "center" }}>No rounds yet.</div>;
-    // Window helpers
     const WINDOWS = SG_WINDOWS;
     const windowRounds = sgWindow === 0 ? rSG : rSG.slice(-Math.min(sgWindow, rSG.length));
     const sgAvg = (key) => {
       const vals = windowRounds.map(r => parseFloat(r[key])).filter(v => !isNaN(v));
       return vals.length ? parseFloat((vals.reduce((a,b)=>a+b,0)/vals.length).toFixed(2)) : null;
     };
-    // Drill-down: find selected round if any
     const drillRound = selectedRound ? rSG.find(r => r.id === selectedRound) : null;
-    // When drilling a single round, ignore the window
     const effWindow  = drillRound ? 1 : sgWindow;
     const windowLabel = drillRound
       ? drillRound.date + " -- " + (drillRound.course || "Round")
@@ -1416,7 +1488,6 @@ export default function App() {
       { key: "sgPutt",  label: "SG: Putting",   color: GL, avg: drillRound ? drillRound.sgPutt  : sgAvg("sgPutt")  },
       { key: "sgTotal", label: "SG: Total",     color: TL, avg: drillRound ? drillRound.sgTotal : sgAvg("sgTotal") },
     ];
-    // For radar, map short keys back
     const SG_RADAR_KEY = { sgOTT: "OTT", sgApp: "App", sgATG: "ATG", sgPutt: "Putt", sgTotal: "Tot" };
     const sgTrend = last(20).map(r => ({ date: (r.date||"").slice(5), OTT: r.sgOTT, App: r.sgApp, ATG: r.sgATG, Putt: r.sgPutt, Tot: r.sgTotal, id: r.id }));
     const activeSeries = activeSG ? SG_SERIES.filter(s => s.key === activeSG) : SG_SERIES;
@@ -1427,7 +1498,6 @@ export default function App() {
     const yMin = vals.length ? Math.floor(Math.min(...vals) * 10) / 10 - 0.2 : -1.5;
     const yMax = vals.length ? Math.ceil(Math.max(...vals)  * 10) / 10 + 0.2 :  1.5;
     const activeSer = activeSG ? SG_SERIES.find(s => s.key === activeSG) : null;
-    // Comparison: compute SG avg for each window period side by side
     const CMP_WINDOWS = [3, 5, 10, 20, 0];
     const cmpData = SG_SERIES.filter(s => s.key !== "sgTotal").map(s => {
       const row = { cat: s.label.replace("SG: ", ""), color: s.color };
@@ -1753,7 +1823,6 @@ export default function App() {
       </div>
     );
   }
-  // -- HOLE ANALYSIS --
   function HoleAnalysis() {
     if (!rSG.length) return <div style={{ color: T3, padding: 40, textAlign: "center" }}>No rounds yet.</div>;
     const r20 = last(20);
@@ -1768,7 +1837,6 @@ export default function App() {
       const girHoles = hd.filter(h => h.gir);
       const missH    = hd.filter(h => !h.gir && h.udAtt);
       const distH    = hd.filter(h => h.distToHole > 0);
-      // tee: { "Driver": { L:3, R:1, hit:2 }, "3W": {...} }
       const teeMap = {};
       hd.forEach(h => {
         if (!h.teeClub || h.par < 4) return;
@@ -1779,7 +1847,6 @@ export default function App() {
         if (h.firMiss === "R")  teeMap[h.teeClub].R++;
         if (h.firMiss === "Sh") teeMap[h.teeClub].Sh++;
       });
-      // approach: { "8i": { gir:3, missL:1, missR:2, missLg:0, missSh:1, sand:1 } }
       const apprMap = {};
       hd.forEach(h => {
         if (!h.approachClub) return;
@@ -1823,7 +1890,6 @@ export default function App() {
       const bg     = isWeak ? RDL : GNL;
       const border = isWeak ? RD  : GN;
       const tc     = isWeak ? RD  : GN;
-      // Build tee club rows: "Driver (8x): L x4, R x1, HIT x3"
       const teeRows = Object.entries(h.teeMap || {})
         .sort((a,b) => b[1].total - a[1].total)
         .map(([club, d]) => {
@@ -1834,7 +1900,6 @@ export default function App() {
           if (d.hit) parts.push("FIR x" + d.hit);
           return { club, total: d.total, detail: parts.join(", ") || "No miss recorded" };
         });
-      // Build approach club rows: "8i (6x): Miss Right x3 (incl 2 bunker), GIR x3"
       const apprRows = Object.entries(h.apprMap || {})
         .sort((a,b) => b[1].total - a[1].total)
         .map(([club, d]) => {
@@ -1959,7 +2024,6 @@ export default function App() {
               avgPutts:  parseFloat((hd.reduce((s,h)=>s+(h.putts||2),0)/hd.length).toFixed(1)),
             };
           }).filter(d => d.n > 0);
-          // Score after bogey
           const bogeyFollowData = r20.flatMap(r => {
             if (!r.holes) return [];
             const result = [];
@@ -1979,7 +2043,6 @@ export default function App() {
             const d = r20.flatMap(r => { if (!r.holes) return []; const res = []; for (let i=0;i<r.holes.length-1;i++) if (r.holes[i].score<r.holes[i].par) res.push(r.holes[i+1].score-r.holes[i+1].par); return res; });
             return d.length ? parseFloat((d.reduce((a,b)=>a+b,0)/d.length).toFixed(2)) : null;
           })();
-          // Front vs Back 9
           const fbData = [
             { label: "Front 9", holes: [1,2,3,4,5,6,7,8,9], par: FRONT_PAR },
             { label: "Back 9",  holes: [10,11,12,13,14,15,16,17,18], par: BACK_PAR },
@@ -2175,7 +2238,6 @@ export default function App() {
               const avgProx = proxArr.length ? (proxArr.reduce((a,b)=>a+b,0)/proxArr.length).toFixed(1) : null;
               return { label, n: hs.length, girPct, avgProx };
             }).filter(r => r.n > 0);
-            // SCRATCH GIR benchmarks by band (approx): closer = higher
             const tourGIR = { "<100m":70, "100-125":60, "125-150":52, "150-175":43, "175-200":34, "200m+":26 };
             return (
               <div style={{ overflowX: "auto", marginTop: 8 }}>
@@ -2333,7 +2395,6 @@ export default function App() {
       </div>
     );
   }
-  // -- CLUB STATS --
   function ClubStats() {
     const [showBag,       setShowBag]       = useState(false);
     const [selFirClub,    setSelFirClub]    = useState(null); // isolated tee club
@@ -2342,8 +2403,6 @@ export default function App() {
     if (!rSG.length) return <div style={{ color: T3, padding: 40, textAlign: "center" }}>No rounds yet. Log rounds to see club statistics.</div>;
     const allRounds = last(50);
     const allHoles  = allRounds.flatMap(r => r.holes || []);
-    // -- FIR per tee club per round --
-    // firByRound[date] = { "Driver": { hit, total }, "Mini": {...}, ... }
     const firByRound = {};
     allRounds.forEach(r => {
       if (!r.holes) return;
@@ -2369,7 +2428,6 @@ export default function App() {
       const ai = clubOrder.indexOf(a); const bi = clubOrder.indexOf(b);
       return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
     });
-    // Build flat chart data: one row per round, columns per club (null if not used that round)
     const firChartData = firDates.map(date => {
       const row = { date };
       firTeeClubs.forEach(club => {
@@ -2379,7 +2437,6 @@ export default function App() {
       });
       return row;
     });
-    // -- GIR per approach club per round --
     const girByRound = {};
     allRounds.forEach(r => {
       if (!r.holes) return;
@@ -2414,10 +2471,8 @@ export default function App() {
       });
       return row;
     });
-    // Club colours: cycle through palette
     const CLUB_COLORS = [BL, GN, OR, GL, TL, RD, PU, "#e040fb", "#26c6da", "#ff7043", "#66bb6a", "#ffa726", "#29b6f6", "#ec407a"];
     const clubColor = (clubs, i) => CLUB_COLORS[i % CLUB_COLORS.length];
-    // -- FAIRWAYS BY TEE CLUB --
     const teeClubMap = {};
     allHoles.forEach(h => {
       if (!h.teeClub || h.par < 4) return;
@@ -2435,7 +2490,6 @@ export default function App() {
     const teeClubs = Object.entries(teeClubMap)
       .map(([club, d]) => ({ club, total: d.hit + d.miss, hit: d.hit, miss: d.miss, L: d.L, R: d.R, Sh: d.Sh, pct: d.hit + d.miss > 0 ? Math.round(d.hit / (d.hit + d.miss) * 100) : 0 }))
       .sort((a, b) => b.total - a.total);
-    // -- GREENS BY APPROACH CLUB x DISTANCE BUCKET --
     const DIST_BUCKETS = [
       { label: "<85m",     min: 0,   max: 85,  club: "LW"    },
       { label: "85-107m",  min: 85,  max: 107, club: "SW"    },
@@ -2449,7 +2503,6 @@ export default function App() {
       { label: "195-215m", min: 195, max: 215, club: "Hybrid"},
       { label: ">215m",    min: 215, max: 9999,club: "4 Wood"},
     ];
-    // apprClubBucket[club][bucketLabel] = { gir, total, L, R, Lg, Sh, sand }
     const apprClubBucket = {};
     allHoles.forEach(h => {
       if (!h.approachClub) return;
@@ -2469,7 +2522,6 @@ export default function App() {
         if (h.sand) cell.sand++;
       }
     });
-    // Also aggregate by distance bucket only (all clubs)
     const distBucketTotals = {};
     allHoles.forEach(h => {
       if (!h.approachClub) return;
@@ -2809,7 +2861,6 @@ export default function App() {
           const Lg = missH.filter(h => h.missDir === "Lg").length;
           const Sh = missH.filter(h => h.missDir === "Sh").length;
           const girPct = total > 0 ? Math.round(girCnt / total * 100) : 0;
-          // Chip vs bunker toggle data
           const chipAtts   = r20.reduce((s,r) => s + (r.chipAtt   || 0), 0);
           const chipMade   = r20.reduce((s,r) => s + (r.chipMade  || 0), 0);
           const bunkerAtts = r20.reduce((s,r) => s + (r.bunkerAtt || 0), 0);
@@ -2818,7 +2869,6 @@ export default function App() {
           const bunkerPct  = bunkerAtts > 0 ? Math.round(bunkerMade / bunkerAtts * 100) : null;
           const sz = 280; const cx = sz/2; const cy = sz/2;
           const rGreen = 68; const rRough = 110;
-          // intensity for direction shading
           const maxCnt = Math.max(L, R, Lg, Sh, 1);
           const shade = (cnt) => Math.round(30 + (cnt / maxCnt) * 160);
           return (
@@ -3136,7 +3186,6 @@ export default function App() {
       </div>
     );
   }
-  // -- SCORING (distribution, conversion, leaks) --
   function Scoring() {
     const NAVY = "#18213a", NAVY2 = "#1a3a5c";
     const [win, setWin] = useState(20);
@@ -3145,7 +3194,6 @@ export default function App() {
     const holes = rounds.flatMap(r => r.holes || []);
     const nR = rounds.length;
     const per = (n) => nR ? (n / nR).toFixed(1) : "0";
-    // Scoring distribution
     const rel = holes.map(h => (h.score || h.par) - h.par);
     const dist = {
       eagle: rel.filter(d => d <= -2).length,
@@ -3161,18 +3209,15 @@ export default function App() {
       ["Bogey", dist.bogey, OR], ["Double", dist.dbl, RD], ["Triple+", dist.tpl, "#7a1f1f"],
     ];
     function GNL2(){ return "#3fae6e"; }
-    // Birdie conversion: of GIR holes, % birdie-or-better
     const girHoles = holes.filter(h => h.gir);
     const girBirdie = girHoles.filter(h => (h.score||h.par) <= h.par - 1).length;
     const birdieConv = girHoles.length ? Math.round(girBirdie / girHoles.length * 100) : null;
-    // Par-type scoring
     const byPar = [3,4,5].map(p => {
       const hs = holes.filter(h => h.par === p);
       const avg = hs.length ? (hs.reduce((s,h)=>s+(h.score||p),0)/hs.length) : null;
       const birdieBetter = hs.filter(h => (h.score||p) <= p-1).length;
       return { p, n: hs.length, avg, vs: avg!=null ? avg - p : null, conv: hs.length ? Math.round(birdieBetter/hs.length*100) : 0 };
     });
-    // Bounce-back: after a bogey-or-worse, next hole birdie-or-better
     let bbOpp = 0, bbMade = 0, dblAfterDrop = 0;
     rounds.forEach(r => {
       const hs = r.holes || [];
@@ -3187,13 +3232,11 @@ export default function App() {
       }
     });
     const bbRate = bbOpp ? Math.round(bbMade / bbOpp * 100) : null;
-    // Front 9 / Back 9 / closing 3
     const splitAvg = (lo, hi) => {
       const hs = holes.filter(h => h.hole >= lo && h.hole <= hi);
       return hs.length ? (hs.reduce((s,h)=>s+((h.score||h.par)-h.par),0)/hs.length) : null;
     };
     const f9 = splitAvg(1,9), b9 = splitAvg(10,18), close3 = splitAvg(16,18), open3 = splitAvg(1,3);
-    // Leak waterfall (per round)
     const lost3putt = holes.reduce((s,h)=>s+Math.max(0,(h.putts||2)-2),0);
     const lostPenalty = holes.filter(h=>h.hazard).length;
     const dblPlus = dist.dbl + dist.tpl;
@@ -3322,7 +3365,6 @@ export default function App() {
       </div>
     );
   }
-  // -- PUTTING (dedicated) --
   function Putting() {
     const NAVY = "#18213a", NAVY2 = "#1a3a5c";
     const [win, setWin] = useState(20);
@@ -3331,7 +3373,6 @@ export default function App() {
     const ph = rounds.flatMap(r => (r.holes || []).filter(h => h.puttDist != null));
     const allH = rounds.flatMap(r => r.holes || []);
     const holed = (h) => asArr(h.puttMiss).includes("made") || h.putts === 1;
-    // Headline metrics
     const totalPutts = rounds.reduce((s,r) => s + (r.totalPutts || 0), 0);
     const puttsPerRound = rounds.length ? (totalPutts / rounds.length).toFixed(1) : "--";
     const girH = allH.filter(h => h.gir);
@@ -3340,34 +3381,28 @@ export default function App() {
     const threePuttRate = allH.length ? (threePuttN / allH.length * 100).toFixed(1) : "0";
     const onePuttN = allH.filter(h => (h.putts||0) === 1).length;
     const onePuttRate = allH.length ? (onePuttN / allH.length * 100).toFixed(1) : "0";
-    // Make % by distance
     const dBands = [[0,1,"<1m",0.99],[1,2,"1-2m",0.88],[2,3,"2-3m",0.62],[3,5,"3-5m",0.40],[5,8,"5-8m",0.22],[8,99,"8m+",0.09]];
     const distRows = dBands.map(([lo,hi,label,scr]) => {
       const hs = ph.filter(h => h.puttDist >= lo && h.puttDist < hi);
       const made = hs.filter(holed).length;
       return { label, n: hs.length, pct: hs.length ? Math.round(made/hs.length*100) : null, scr: Math.round(scr*100) };
     }).filter(r => r.n > 0);
-    // Make % by break / shape
     const breaks = [["RtoL","R to L",PU],["LtoR","L to R",BL],["uphill","Uphill",GN],["downhill","Downhill",RD],["double","Double",OR]];
     const breakRows = breaks.map(([v,label,c]) => {
       const hs = ph.filter(h => asArr(h.puttBreak).includes(v));
       const made = hs.filter(holed).length;
       return { label, c, n: hs.length, pct: hs.length ? Math.round(made/hs.length*100) : null };
     }).filter(r => r.n > 0);
-    // MISS DIAGNOSTIC (pace vs line). puttMiss is multi: short/holehigh/long (pace) + left/right (line)
     const missH = ph.filter(h => { const a = asArr(h.puttMiss); return a.length && !a.includes("made"); });
     const mc = { short:0, holehigh:0, long:0, left:0, right:0 };
     missH.forEach(h => { asArr(h.puttMiss).forEach(v => { if (mc[v] != null) mc[v]++; }); });
     const missTotal = missH.length;                  // count of missed putts (a putt may carry pace + line tags)
     const shortPct = missTotal ? Math.round(mc.short / missTotal * 100) : 0;
-    // bad pace = short OR long; good speed = hole high; line = left OR right
     const paceMiss = missH.filter(h => { const a = asArr(h.puttMiss); return a.includes("short") || a.includes("long"); }).length;
     const lineMiss = missH.filter(h => { const a = asArr(h.puttMiss); return a.includes("left") || a.includes("right"); }).length;
     const holeHighPct = missTotal ? Math.round(mc.holehigh / missTotal * 100) : 0;  // good speed, line was the miss
-    // Pure pace: short with NO side miss = on-line but under-hit (the firmer-putter signal)
     const shortOnline = missH.filter(h => { const a = asArr(h.puttMiss); return a.includes("short") && !a.includes("left") && !a.includes("right"); }).length;
     const shortOnlinePct = missTotal ? Math.round(shortOnline / missTotal * 100) : 0;
-    // 3-putts by first-putt distance
     const tpBands = [[0,3,"<3m"],[3,6,"3-6m"],[6,10,"6-10m"],[10,99,"10m+"]];
     const tpRows = tpBands.map(([lo,hi,label]) => {
       const hs = ph.filter(h => h.puttDist >= lo && h.puttDist < hi);
@@ -3536,7 +3571,6 @@ export default function App() {
       </div>
     );
   }
-  // -- TRENDS --
   function Trends() {
     if (!rSG.length) return <div style={{ color: T3, padding: 40, textAlign: "center" }}>No rounds yet.</div>;
     const td = last(20).map(r => ({
@@ -3623,7 +3657,6 @@ export default function App() {
       </div>
     );
   }
-  // -- INSIGHTS --
   function PracticeLog() {
     const AREAS = ["Putting","Chipping","Bunker","Approach","Driver","Iron Play","Mental","Fitness","Course Management"];
     const logs = practiceLogs;
@@ -3632,7 +3665,6 @@ export default function App() {
       setPracticeLogs(p => [...p, { ...practiceForm, id: Date.now() }]);
       setPracticeForm(f => ({ ...f, drill: "", made: null, att: null, notes: "", duration: 30 }));
     }
-    // Stats per area
     const areaStats = AREAS.map(area => {
       const sessions = logs.filter(l => l.area === area);
       const totalMins = sessions.reduce((s,l) => s+(l.duration||0), 0);
@@ -3640,13 +3672,11 @@ export default function App() {
       const convPct = withConv.length ? Math.round(withConv.reduce((s,l) => s+l.made/l.att, 0)/withConv.length*100) : null;
       return { area, sessions: sessions.length, totalMins, convPct };
     }).filter(a => a.sessions > 0);
-    // Time allocation chart data (last 30 days)
     const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 30);
     const recent30 = logs.filter(l => new Date(l.date) >= cutoff);
     const allocData = AREAS.map(area => ({
       area, mins: recent30.filter(l=>l.area===area).reduce((s,l)=>s+(l.duration||0),0)
     })).filter(d => d.mins > 0).sort((a,b)=>b.mins-a.mins);
-    // Weakness from SG
     const weakArea = s10 ? [
       { area: "Putting",    sg: s10.sgPutt || 0 },
       { area: "Chipping",   sg: s10.sgATG  || 0 },
@@ -3932,7 +3962,6 @@ export default function App() {
       </div>
     );
   }
-  // -- SHELL --
   return (
     <div style={{ minHeight: "100vh", background: BG, color: T1, fontFamily: "system-ui, sans-serif", fontSize: 14 }}>
       <div style={{ background: CARD, borderBottom: "2px solid " + BD, padding: "0 24px", display: "flex", alignItems: "center", height: 54, position: "sticky", top: 0, zIndex: 100, boxShadow: "0 2px 8px rgba(0,0,0,0.08)" }}>
